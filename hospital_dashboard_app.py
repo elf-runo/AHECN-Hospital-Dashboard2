@@ -10,7 +10,13 @@ import random
 import math
 import os
 import csv
-import joblib   # for loading the ML model
+
+# joblib is optional – used only if available
+try:
+    import joblib   # for loading the ML model
+except ImportError:
+    joblib = None
+
 
 # === PAGE CONFIG ===
 st.set_page_config(
@@ -148,13 +154,21 @@ EMT_CREW = [
 @st.cache_resource
 def load_triage_model():
     """
-    Load the pre-trained model.
-    Returns None if model file not found or loading fails,
-    so the dashboard still works without the AI layer.
+    Load the pre-trained model if possible.
+    Returns None if:
+      - joblib is not installed, or
+      - model file is not found, or
+      - loading fails for any reason.
+    The dashboard continues to work without the AI layer.
     """
+    # If joblib isn't available in this environment, skip AI
+    if joblib is None:
+        return None
+
     model_path = "my_model.pkl"
     if not os.path.exists(model_path):
         return None
+
     try:
         model = joblib.load(model_path)
         return model
