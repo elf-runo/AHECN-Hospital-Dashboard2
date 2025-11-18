@@ -17,74 +17,73 @@ try:
     import joblib  # for loading the ML model
 except ImportError:
     joblib = None
-# get_unique_key FUNCTION (ADD THIS)
-def get_unique_key(prefix, case_type, case):
-    """Generate a unique key for Streamlit buttons to avoid conflicts"""
-    return f"{prefix}_{case_type}_{case['case_id']}"
-# === ADD create_fallback_model FUNCTION HERE (STEP 2) ===
-def create_fallback_model():
-    """
-    Create a simple fallback model if the main model fails to load
-    """
+
+# === DEMO MODEL CREATION ===
+def create_demo_model():
+    """Create a lightweight demo model for Streamlit Cloud"""
     try:
         from sklearn.ensemble import RandomForestClassifier
         from sklearn.datasets import make_classification
-        import numpy as np
         
-        # Create synthetic training data
+        # Create smaller, efficient model
         X, y = make_classification(
-            n_samples=1000, 
-            n_features=4,  # age, sbp, spo2, hr
-            n_redundant=0, 
+            n_samples=500,
+            n_features=4,
+            n_redundant=0,
             n_informative=4,
             random_state=42
         )
         
-        # Create and train a simple model
-        model = RandomForestClassifier(n_estimators=10, random_state=42)
+        # Efficient model
+        model = RandomForestClassifier(
+            n_estimators=50,
+            max_depth=10,
+            random_state=42
+        )
         model.fit(X, y)
         
-        # Save the fallback model
-        joblib.dump(model, "fallback_model.pkl")
-        st.sidebar.write("🔄 Created fallback model")
-        
+        # Save as demo model
+        joblib.dump(model, "demo_model.pkl")
+        st.sidebar.success("✅ Created optimized demo AI model")
         return model
         
     except Exception as e:
-        st.sidebar.write(f"❌ Failed to create fallback model: {e}")
+        st.sidebar.error(f"❌ Demo model creation failed: {e}")
         return None
-    
-# === AI MODEL LOADING (WITH CACHE) ===
+
+# === ROBUST MODEL LOADING ===
 @st.cache_resource
 def load_triage_model():
     """
-    Robust model loading for MVP demonstration
+    Smart model loading that handles large files gracefully
     """
     try:
         if joblib is None:
-            st.sidebar.error("❌ AI Dependency Missing: joblib not available")
-            return None
+            st.sidebar.error("❌ joblib not available")
+            return create_demo_model()
             
-        model_path = "my_model.pkl"
-        
-        # Check if model file exists
-        if not os.path.exists(model_path):
-            st.sidebar.error("❌ AI Model File Missing: my_model.pkl not found in deployment")
-            return None
-        
-        # Try to load the model
-        model = joblib.load(model_path)
-        st.sidebar.success("✅ AI Engine: Loaded Successfully")
-        return model
-        
+        # Priority 1: Try demo model (smallest)
+        if os.path.exists("demo_model.pkl"):
+            return joblib.load("demo_model.pkl")
+            
+        # Priority 2: Check main model size
+        if os.path.exists("my_model.pkl"):
+            file_size = os.path.getsize("my_model.pkl") / (1024 * 1024)
+            if file_size > 50:  # Too large for Streamlit Cloud
+                st.sidebar.warning(f"📦 Large model ({file_size:.1f}MB). Using demo version.")
+                return create_demo_model()
+            else:
+                return joblib.load("my_model.pkl")
+        else:
+            # No model found
+            return create_demo_model()
+            
     except Exception as e:
-        st.sidebar.error(f"❌ AI Engine Error: {str(e)}")
-        return None
+        st.sidebar.error(f"❌ Model loading error: {e}")
+        return create_demo_model()
 
 def get_triage_model():
-    """
-    Get AI model for MVP demonstration
-    """
+    """Get AI model for MVP demo"""
     return load_triage_model()
     
 # === PAGE CONFIG ===
