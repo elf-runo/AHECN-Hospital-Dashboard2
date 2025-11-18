@@ -17,7 +17,6 @@ try:
 except ImportError:
     joblib = None
 
-
 # === PAGE CONFIG ===
 st.set_page_config(
     page_title="AHECN Hospital Command Center",
@@ -159,9 +158,7 @@ def load_triage_model():
       - joblib is not installed, or
       - model file is not found, or
       - loading fails for any reason.
-    The dashboard continues to work without the AI layer.
     """
-    # If joblib isn't available in this environment, skip AI
     if joblib is None:
         return None
 
@@ -608,7 +605,7 @@ def render_case_details(case, case_type):
         st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
         if AI_MODEL is None:
-            st.warning("AI model not available. Please ensure 'my_model.pkl' is present and loadable.")
+            st.warning("AI model not available. Please ensure 'my_model.pkl' is present, compatible, and that joblib is installed.")
         else:
             # Features: [age, sbp, spo2, hr]
             features = [
@@ -945,11 +942,12 @@ def render_premium_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🛠️ Tools")
 
-    if st.sidebar.button("🔄 Force Refresh", key="sidebar_refresh"):
+    # NOTE: keys here are unique: *sidebar*_refresh_btn, *sidebar*_summary_btn
+    if st.sidebar.button("🔄 Force Refresh", key="sidebar_refresh_btn"):
         st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
-        st.rerun()
+        st.experimental_rerun()
 
-    if st.sidebar.button("📋 Data Summary", key="sidebar_summary"):
+    if st.sidebar.button("📋 Data Summary", key="sidebar_summary_btn"):
         total_cases = len(st.session_state.premium_data["referred_cases"])
         st.sidebar.info(f"Total Cases: {total_cases}")
 
@@ -990,11 +988,6 @@ def main():
         render_quick_actions()
 
     # Sidebar
-    render_premium_sidebar()
-
-if __name__ == "__main__":
-    main()
-
     render_premium_sidebar()
 
 if __name__ == "__main__":
