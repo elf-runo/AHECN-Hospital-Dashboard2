@@ -262,7 +262,13 @@ def initialize_session_state():
             "start_date": datetime.now().date() - timedelta(days=7),
             "end_date": datetime.now().date()
         }
-
+# === UNIQUE KEY GENERATOR ===
+def get_unique_key(component_type, case_type, case_data, extra_suffix=""):
+    """Generate truly unique keys for Streamlit components"""
+    case_id = case_data.get('case_id', 'unknown')
+    timestamp = case_data.get('timestamp', '').strftime('%Y%m%d%H%M%S') if hasattr(case_data.get('timestamp'), 'strftime') else 'notime'
+    return f"{component_type}_{case_type}_{case_id}_{timestamp}_{extra_suffix}"
+    
 # === PREMIUM DASHBOARD COMPONENTS ===
 def render_premium_header():
     """Render premium header with key metrics"""
@@ -396,7 +402,7 @@ def render_interactive_case_list(case_type="referred"):
     """Interactive case list with detailed views - FIXED DUPLICATE KEYS"""
     
     # Create unique key prefix for this case list
-    key_prefix = f"{case_type}_cases"
+    key_prefix = f"{case_type}_cases_{id(st.session_state.premium_data)}"
     
     st.markdown(f"### 📋 {'Referred' if case_type == 'referred' else 'Received'} Cases")
     
@@ -464,14 +470,17 @@ def render_interactive_case_list(case_type="referred"):
         st.write(f"Showing {len(paginated_cases)} of {len(filtered_cases)} cases")
         
         # Display cases
-        for idx, case in paginated_cases.iterrows():
-            render_case_card(case, case_type, idx)
+        for display_idx, (idx, case) in enumerate(paginated_cases.iterrows()):
+            render_case_card(case, case_type, display_idx)
     else:
         st.info("No cases found matching the current filters")
 
 def render_case_card(case, case_type, index):
     """Render individual case card with unique keys"""
     case_class = f"case-card {case['triage_color'].lower()}"
+    
+    # Use the new unique key generator
+    unique_key = get_unique_key("case_expander", case_type, case)
     
     with st.container():
         st.markdown(f"""
@@ -493,10 +502,11 @@ def render_case_card(case, case_type, index):
         </div>
         """, unsafe_allow_html=True)
         
-        # Case details expander with unique key
-        with st.expander(f"View full details for {case['case_id']}", key=f"case_details_{case_type}_{index}"):
+        # Case details expander with UNIQUE key using the new generator
+        unique_key = get_unique_key("case_expander", case_type, case)
+        with st.expander(f"View full details for {case['case_id']}", key=unique_key):
             render_case_details(case, case_type)
-
+            
 def render_case_details(case, case_type):
     """Render detailed case information"""
     col1, col2 = st.columns([1, 1])
@@ -669,25 +679,25 @@ def render_quick_actions():
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🔄 Refresh All Data", use_container_width=True, key="refresh_data_btn"):
+        if st.button("🔄 Refresh All Data", use_container_width=True, key="refresh_data_btn_main"):
             st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
             st.success("Data refreshed successfully!")
         
-        if st.button("📊 Generate Report", use_container_width=True, key="generate_report_btn"):
+        if st.button("📊 Generate Report", use_container_width=True, key="generate_report_btn_main"):
             st.info("Generating comprehensive report...")
     
     with col2:
-        if st.button("🚨 Emergency Mode", use_container_width=True, type="secondary", key="emergency_mode_btn"):
+        if st.button("🚨 Emergency Mode", use_container_width=True, type="secondary", key="emergency_mode_btn_main"):
             st.warning("Emergency mode activated - prioritizing critical cases")
         
-        if st.button("📋 Case Summary", use_container_width=True, key="case_summary_btn"):
+        if st.button("📋 Case Summary", use_container_width=True, key="case_summary_btn_main"):
             st.info("Displaying case summary...")
     
     with col3:
-        if st.button("📧 Notify Staff", use_container_width=True, key="notify_staff_btn"):
+        if st.button("📧 Notify Staff", use_container_width=True, key="notify_staff_btn_main"):
             st.success("Staff notification sent!")
         
-        if st.button("🖨️ Export Data", use_container_width=True, key="export_data_btn"):
+        if st.button("🖨️ Export Data", use_container_width=True, key="export_data_btn_main"):
             st.info("Preparing data export...")
     
     # Quick referral form
