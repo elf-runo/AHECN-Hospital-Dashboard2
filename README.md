@@ -1,19 +1,20 @@
 # 🏥 AHECN Hospital Dashboard MVP
 
-A comprehensive hospital dashboard for emergency care coordination with predictive analytics and real-time triaging.
+A streamlined hospital dashboard for emergency care coordination.
+
+## Quick Deploy
+
+[![Deploy on Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/yourusername/AHECN-Hospital-Dashboard/app.py)
 
 ## Features
 
-- **Dual-role Dashboard** (Referring & Receiving Centers)
-- **Medical Triaging** (NEWS2, qSOFA, MEOWS, PEWS scoring)
-- **Real-time EMT Simulation**
-- **Predictive Analytics**
-- **Intervention Management**
-- **ICD-10 Code Integration**
+- Real-time case tracking
+- Triage assessment tool
+- Capacity monitoring
+- Referral management
 
-## Deployment
+## Local Development
 
-### Local Development
 ```bash
 git clone https://github.com/yourusername/AHECN-Hospital-Dashboard.git
 cd AHECN-Hospital-Dashboard
