@@ -1,58 +1,136 @@
-# hospital_dashboard_app.py - COMPLETE SELF-CONTAINED VERSION
+# hospital_dashboard_premium.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.subplots as sp
 from datetime import datetime, timedelta
 import time
 import random
 import math
+import json
+from streamlit_calendar import calendar
+import folium
+from streamlit_folium import folium_static
+from geopy.distance import geodesic
 
-# === CSS STYLING ===
+# === PAGE CONFIG ===
+st.set_page_config(
+    page_title="AHECN Hospital Command Center",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    page_icon="🏥"
+)
+
+# === PREMIUM CSS STYLING ===
 st.markdown("""
 <style>
 :root {
-    --primary: #1f77b4;
-    --secondary: #ff7f0e;
-    --success: #2ca02c;
-    --danger: #d62728;
-    --warning: #ff7f0e;
-    --info: #17a2b8;
+    --primary: #1a237e;
+    --secondary: #283593;
+    --accent: #536dfe;
+    --success: #00c853;
+    --warning: #ffab00;
+    --danger: #ff1744;
+    --dark: #0d1b2a;
+    --light: #f8f9fa;
+    --gradient: linear-gradient(135deg, #1a237e 0%, #283593 100%);
 }
 
-.card {
-    background: #f8f9fa;
-    border-radius: 10px;
-    padding: 15px;
-    margin: 10px 0;
-    border-left: 4px solid var(--primary);
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+.main-header {
+    background: var(--gradient);
+    padding: 2rem;
+    border-radius: 15px;
+    color: white;
+    margin-bottom: 2rem;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
 }
 
-.triage-red { border-left-color: var(--danger); background: #ffebee; }
-.triage-yellow { border-left-color: var(--warning); background: #fff3e0; }
-.triage-green { border-left-color: var(--success); background: #e8f5e8; }
-
-.metric-card {
+.premium-card {
     background: white;
-    border-radius: 8px;
-    padding: 15px;
+    border-radius: 15px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    border: 1px solid #e0e0e0;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.premium-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+}
+
+.case-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1rem;
+    margin: 0.5rem 0;
+    border-left: 5px solid var(--accent);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.case-card:hover {
+    transform: translateX(5px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+}
+
+.case-card.critical { border-left-color: var(--danger); background: #fff5f5; }
+.case-card.urgent { border-left-color: var(--warning); background: #fffbf0; }
+.case-card.stable { border-left-color: var(--success); background: #f8fff8; }
+
+.metric-highlight {
+    background: var(--gradient);
+    color: white;
+    padding: 1.5rem;
+    border-radius: 12px;
     text-align: center;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    box-shadow: 0 4px 15px rgba(0,0,0,0.1);
 }
 
-.intervention-item {
+.timeline-event {
+    border-left: 3px solid var(--accent);
+    padding: 0.5rem 1rem;
+    margin: 0.5rem 0;
+    background: #f8f9ff;
+}
+
+.intervention-badge {
+    display: inline-block;
+    background: #e3f2fd;
+    color: #1976d2;
+    padding: 0.3rem 0.8rem;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    margin: 0.2rem;
+    border: 1px solid #bbdefb;
+}
+
+.status-indicator {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+}
+
+.status-active { background: var(--success); }
+.status-pending { background: var(--warning); }
+.status-completed { background: var(--accent); }
+
+.calendar-container {
     background: white;
-    padding: 10px;
-    margin: 5px 0;
-    border-radius: 5px;
-    border-left: 4px solid #3498db;
+    border-radius: 15px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.08);
 }
 </style>
 """, unsafe_allow_html=True)
 
-# === MEDICAL DATA CATALOGS ===
+# === ENHANCED MEDICAL DATA CATALOGS ===
 ICD_CATALOG = [
     {"icd_code": "O72.0", "label": "Third-stage haemorrhage", "case_type": "Maternal", "age_min": 12, "age_max": 55},
     {"icd_code": "O72.1", "label": "Immediate postpartum haemorrhage", "case_type": "Maternal", "age_min": 12, "age_max": 55},
@@ -66,543 +144,670 @@ ICD_CATALOG = [
 ]
 
 INTERVENTION_PROTOCOLS = {
-    "Maternal": ["IV fluids", "Uterotonics", "TXA", "Oxygen", "BP monitoring"],
-    "Trauma": ["Airway management", "IV access", "Bleeding control", "Immobilization", "Pain management"],
-    "Stroke": ["BP control", "Glucose check", "Neurological assessment", "Frequent monitoring"],
-    "Cardiac": ["Aspirin", "Oxygen", "IV access", "ECG monitoring", "Nitroglycerin"],
-    "Sepsis": ["Antibiotics", "IV fluids", "Oxygen", "Blood cultures", "Vasopressors"],
-    "Other": ["Oxygen", "IV access", "Symptom management", "Monitoring"]
+    "Maternal": ["IV fluids", "Uterotonics", "TXA", "Oxygen", "BP monitoring", "Fundal massage", "Emergency C-section prep"],
+    "Trauma": ["Airway management", "IV access", "Bleeding control", "Immobilization", "Pain management", "Chest tube", "Emergency surgery prep"],
+    "Stroke": ["BP control", "Glucose check", "Neurological assessment", "Frequent monitoring", "CT scan", "Thrombolysis prep"],
+    "Cardiac": ["Aspirin", "Oxygen", "IV access", "ECG monitoring", "Nitroglycerin", "Cath lab activation"],
+    "Sepsis": ["Antibiotics", "IV fluids", "Oxygen", "Blood cultures", "Vasopressors", "Lactate monitoring"],
+    "Other": ["Oxygen", "IV access", "Symptom management", "Monitoring", "Specialist consult"]
 }
 
-EMT_INTERVENTIONS = {
-    "Airway": ["Oxygen administration", "Airway positioning", "Suction", "Advanced airway"],
-    "Breathing": ["Chest seal", "Needle decompression", "Ventilation assistance"],
-    "Circulation": ["IV access", "Fluid resuscitation", "Bleeding control", "Tourniquet"],
-    "Disability": ["Spinal immobilization", "Head stabilization", "Seizure management"]
-}
+EMT_CREW = [
+    {"id": "EMT_001", "name": "John Carter", "level": "ALS", "vehicle": "Ambulance 1", "status": "active"},
+    {"id": "EMT_002", "name": "Sarah Connor", "level": "BLS", "vehicle": "Ambulance 2", "status": "active"},
+    {"id": "EMT_003", "name": "Mike Rodriguez", "level": "ALS", "vehicle": "Ambulance 3", "status": "available"},
+    {"id": "EMT_004", "name": "Lisa Park", "level": "Critical Care", "vehicle": "Mobile ICU", "status": "available"},
+]
 
-# === TRIAGING ALGORITHM ===
-def _num(x):
-    if x is None: return None
-    s = str(x).strip()
-    if s == "": return None
-    try: return float(s)
-    except Exception: return None
-
-def _clip(v, lo, hi):
-    x = _num(v)
-    if x is None: return None
-    return max(lo, min(hi, x))
-
-def validate_vitals(hr, rr, sbp, temp, spo2):
-    return dict(
-        hr   = _clip(hr,   20, 240),
-        rr   = _clip(rr,    5,  60),
-        sbp  = _clip(sbp,  50, 260),
-        temp = _clip(temp, 32,  42),
-        spo2 = _clip(spo2, 50, 100),
-    )
-
-def calc_NEWS2(rr, spo2, sbp, hr, temp, avpu, o2_device="Air", spo2_scale=1):
-    rr, spo2, sbp, hr, temp = (_num(rr), _num(spo2), _num(sbp), _num(hr), _num(temp))
-    avpu = "A" if avpu is None else str(avpu).strip().upper()
-    spo2_scale = int(spo2_scale) if spo2_scale else 1
-    o2_device = "Air" if not o2_device else str(o2_device).strip()
-
-    hits, score = [], 0
-
-    # RR scoring
-    if rr is None: pass
-    elif rr <= 8:      score += 3; hits.append("NEWS2 RR ≤8 =3")
-    elif 9 <= rr <=11: score += 1; hits.append("NEWS2 RR 9–11 =1")
-    elif 12 <= rr <=20:                 hits.append("NEWS2 RR 12–20 =0")
-    elif 21 <= rr <=24: score += 2; hits.append("NEWS2 RR 21–24 =2")
-    else:               score += 3; hits.append("NEWS2 RR ≥25 =3")
-
-    # SpO2 scoring
-    def spo2_s1(s): return 3 if s<=91 else 2 if s<=93 else 1 if s<=95 else 0
-    def spo2_s2(s): return 3 if s<=83 else 2 if s<=85 else 1 if s<=90 else 0 if s<=92 else 0
-    if spo2 is not None:
-        pts = spo2_s1(spo2) if spo2_scale==1 else spo2_s2(spo2)
-        score += pts; hits.append(f"NEWS2 SpO₂ (scale {spo2_scale}) +{pts}")
-    if str(o2_device).lower() != "air":
-        score += 2; hits.append("NEWS2 Supplemental O₂ +2")
-
-    # SBP scoring
-    if sbp is not None:
-        if sbp <= 90:        score += 3; hits.append("NEWS2 SBP ≤90 =3")
-        elif sbp <=100:      score += 2; hits.append("NEWS2 SBP 91–100 =2")
-        elif sbp <=110:      score += 1; hits.append("NEWS2 SBP 101–110 =1")
-        elif sbp <=219:                     hits.append("NEWS2 SBP 111–219 =0")
-        else:                score += 3; hits.append("NEWS2 SBP ≥220 =3")
-
-    # HR scoring
-    if hr is not None:
-        if hr <= 40:         score += 3; hits.append("NEWS2 HR ≤40 =3")
-        elif hr <= 50:       score += 1; hits.append("NEWS2 HR 41–50 =1")
-        elif hr <= 90:                      hits.append("NEWS2 HR 51–90 =0")
-        elif hr <=110:       score += 1; hits.append("NEWS2 HR 91–110 =1")
-        elif hr <=130:       score += 2; hits.append("NEWS2 HR 111–130 =2")
-        else:                score += 3; hits.append("NEWS2 HR ≥131 =3")
-
-    # Temp scoring
-    if temp is not None:
-        if temp <= 35.0:         score += 3; hits.append("NEWS2 Temp ≤35.0 =3")
-        elif temp <= 36.0:       score += 1; hits.append("NEWS2 Temp 35.1–36.0 =1")
-        elif temp <= 38.0:                        hits.append("NEWS2 Temp 36.1–38.0 =0")
-        elif temp <= 39.0:       score += 1; hits.append("NEWS2 Temp 38.1–39.0 =1")
-        else:                    score += 2; hits.append("NEWS2 Temp ≥39.1 =2")
-
-    # AVPU scoring
-    if avpu != "A":
-        score += 3; hits.append("NEWS2 AVPU ≠ A =3")
-
-    return score, hits, (5 <= score < 7), (score >= 7)
-
-def safe_calc_NEWS2(rr, spo2, sbp, hr, temp, avpu, o2_device="Air", spo2_scale=1):
-    try:
-        raw = calc_NEWS2(rr, spo2, sbp, hr, temp, avpu, o2_device, spo2_scale)
-        return raw
-    except Exception as e:
-        return 0, [f"NEWS2 error: {str(e)}"], False, False
-
-def calc_qSOFA(rr, sbp, avpu):
-    rr, sbp = _num(rr), _num(sbp)
-    avpu = "A" if avpu is None else str(avpu).strip().upper()
-    hits, score = [], 0
-    if rr is not None and rr >= 22: hits.append("RR ≥22"); score += 1
-    if sbp is not None and sbp <= 100: hits.append("SBP ≤100"); score += 1
-    if avpu != "A": hits.append("Altered mentation"); score += 1
-    return score, hits, (score >= 2)
-
-def calc_MEOWS(hr, rr, sbp, temp, spo2):
-    hr, rr, sbp, temp, spo2 = _num(hr), _num(rr), _num(sbp), _num(temp), _num(spo2)
-    red, yellow = [], []
-    if sbp is not None:
-        if sbp < 90 or sbp > 160: red.append("SBP critical")
-        elif sbp < 100 or sbp > 150: yellow.append("SBP borderline")
-    if hr is not None:
-        if hr > 120 or hr < 50: red.append("HR critical")
-        elif hr > 100: yellow.append("HR high")
-    if rr is not None:
-        if rr > 30 or rr < 10: red.append("RR critical")
-        elif rr > 21: yellow.append("RR high")
-    if temp is not None:
-        if temp >= 38.0 or temp < 35.0: red.append("Temp critical")
-        elif temp >= 37.6: yellow.append("Temp high")
-    if spo2 is not None:
-        if spo2 < 94: red.append("SpO₂ <94%")
-        elif spo2 < 96: yellow.append("SpO₂ 94–95%")
-    return {"red": red, "yellow": yellow}
-
-def calc_PEWS(age, rr, hr, behavior="Normal", spo2=None):
-    age, rr, hr, spo2 = _num(age), _num(rr), _num(hr), _num(spo2)
-    if age is None: return 0, {"detail": "age missing"}, False, False
-
-    # Age-based parameters
-    if age < 1:         rr_y, rr_r = (40, 50), (50, 60); hr_y, hr_r = (140, 160), (160, 200)
-    elif age < 5:       rr_y, rr_r = (30, 40), (40, 60); hr_y, hr_r = (130, 150), (150, 200)
-    elif age < 12:      rr_y, rr_r = (24, 30), (30, 60); hr_y, hr_r = (120, 140), (140, 200)
-    else:               rr_y, rr_r = (20, 24), (24, 60); hr_y, hr_r = (110, 130), (130, 200)
-
-    sc = 0
-    # RR scoring
-    if rr is not None:
-        if rr >= rr_r[1] or rr <= rr_r[0]: sc += 2
-        elif rr >= rr_y[1] or rr <= rr_y[0]: sc += 1
-    
-    # HR scoring
-    if hr is not None:
-        if hr >= hr_r[1] or hr <= hr_r[0]: sc += 2
-        elif hr >= hr_y[1] or hr <= hr_y[0]: sc += 1
-    
-    # SpO2 scoring
-    if spo2 is not None:
-        if spo2 < 92: sc += 2
-        elif spo2 < 95: sc += 1
-
-    # Behavior scoring
-    beh = str(behavior or "Normal").lower()
-    if beh == "lethargic": sc += 2
-    elif beh == "irritable": sc += 1
-
-    return sc, {"age": age}, (sc >= 6), (sc >= 4)
-
-def triage_decision(vitals, context):
-    v = validate_vitals(vitals.get("hr"), vitals.get("rr"), vitals.get("sbp"),
-                        vitals.get("temp"), vitals.get("spo2"))
-    avpu = vitals.get("avpu","A")
-    reasons = []
-
-    news2_score, news2_hits, news2_review, news2_urgent = safe_calc_NEWS2(
-        v["rr"], v["spo2"], v["sbp"], v["hr"], v["temp"], avpu,
-        context.get("o2_device", "Air"), context.get("spo2_scale", 1)
-    )
-    
-    q_score, q_hits, q_high = (
-        calc_qSOFA(v["rr"], v["sbp"], avpu) if context.get("infection") else (0, [], False)
-    )
-    
-    meows = (
-        calc_MEOWS(v["hr"], v["rr"], v["sbp"], v["temp"], v["spo2"])
-        if context.get("pregnant") else {"red": [], "yellow": []}
-    )
-    
-    pews_sc, pews_meta, pews_high, pews_watch = (
-        calc_PEWS(context.get("age"), v["rr"], v["hr"], context.get("behavior","Normal"), v["spo2"])
-        if (context.get("age") is not None and context.get("age") < 18)
-        else (0, {}, False, False)
-    )
-
-    colour = "GREEN"
-    
-    # RED criteria
-    if (news2_urgent or q_high or 
-        (context.get("pregnant") and len(meows["red"]) > 0) or 
-        (context.get("age") is not None and context.get("age") < 18 and pews_high)):
-        colour = "RED"
-    
-    # YELLOW criteria
-    elif colour == "GREEN" and (
-        news2_review or 
-        (context.get("pregnant") and len(meows["yellow"]) > 0) or 
-        (context.get("age") is not None and context.get("age") < 18 and pews_watch)):
-        colour = "YELLOW"
-
-    # Build reasons
-    if news2_urgent: reasons.append(f"NEWS2 {news2_score} (≥7)")
-    elif news2_review: reasons.append(f"NEWS2 {news2_score} (≥5)")
-    if q_high: reasons.append(f"qSOFA {q_score} (≥2)")
-    if context.get("pregnant") and meows["red"]: reasons.append("MEOWS red band")
-    if context.get("pregnant") and meows["yellow"] and colour == "YELLOW": reasons.append("MEOWS yellow band")
-    if (context.get("age") is not None and context.get("age") < 18 and pews_high): 
-        reasons.append(f"PEWS {pews_sc} (≥6)")
-    if (context.get("age") is not None and context.get("age") < 18 and pews_watch and colour == "YELLOW"): 
-        reasons.append(f"PEWS {pews_sc} (≥4)")
-
-    details = {
-        "NEWS2": {"score": news2_score, "review": news2_review, "urgent": news2_urgent},
-        "qSOFA": {"score": q_score, "high": q_high},
-        "MEOWS": meows,
-        "PEWS": {"score": pews_sc, "high": pews_high, "watch": pews_watch},
-        "reasons": reasons
-    }
-    return colour, details
-
-# === DATA GENERATION ===
-def generate_comprehensive_synthetic_data():
-    """Generate synthetic medical data"""
+# === ENHANCED DATA GENERATION ===
+def generate_premium_synthetic_data(days_back=30):
+    """Generate comprehensive synthetic data with realistic timelines"""
     
     facilities = [
-        "Tertiary Central Hospital", "District North General", 
-        "Specialty South Medical", "Trauma East Center", "Community West Hospital"
+        {"name": "Tertiary Central Hospital", "type": "Tertiary", "lat": 25.578, "lon": 91.893, "beds": 500},
+        {"name": "District North General", "type": "District", "lat": 25.591, "lon": 91.878, "beds": 200},
+        {"name": "Specialty South Medical", "type": "Specialty", "lat": 25.565, "lon": 91.901, "beds": 150},
+        {"name": "Trauma East Center", "type": "Trauma", "lat": 25.572, "lon": 91.885, "beds": 300},
     ]
     
     case_types = ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"]
     
-    # Generate referred cases
     referred_cases = []
-    base_time = time.time() - 30 * 24 * 3600
-    
-    for i in range(150):
-        case_type = random.choice(case_types)
-        age = random.randint(18, 80) if case_type != "Maternal" else random.randint(18, 40)
-        
-        # Generate medically appropriate vitals
-        if case_type == "Maternal":
-            vitals = {
-                "hr": random.randint(90, 140), "sbp": random.randint(80, 160),
-                "rr": random.randint(18, 30), "temp": round(random.uniform(36.5, 38.5), 1),
-                "spo2": random.randint(92, 99), "avpu": "A"
-            }
-        elif case_type == "Trauma":
-            vitals = {
-                "hr": random.randint(70, 150), "sbp": random.randint(70, 180),
-                "rr": random.randint(16, 35), "temp": round(random.uniform(36.0, 38.0), 1),
-                "spo2": random.randint(88, 98), "avpu": random.choices(["A", "V", "P"], weights=[0.7, 0.2, 0.1])[0]
-            }
-        else:
-            vitals = {
-                "hr": random.randint(80, 140), "sbp": random.randint(90, 150),
-                "rr": random.randint(18, 32), "temp": round(random.uniform(36.5, 39.0), 1),
-                "spo2": random.randint(86, 95), "avpu": random.choices(["A", "V"], weights=[0.8, 0.2])[0]
-            }
-        
-        # Calculate triage
-        context = {
-            "age": age,
-            "pregnant": (case_type == "Maternal"),
-            "infection": (case_type in ["Sepsis", "Other"]),
-            "o2_device": "Air",
-            "spo2_scale": 1,
-            "behavior": "Normal"
-        }
-        triage_color, score_details = triage_decision(vitals, context)
-        
-        # Select ICD code
-        matching_icd = [icd for icd in ICD_CATALOG if icd["case_type"] == case_type and icd["age_min"] <= age <= icd["age_max"]]
-        icd = random.choice(matching_icd) if matching_icd else random.choice([icd for icd in ICD_CATALOG if icd["case_type"] == case_type])
-        
-        # Generate interventions
-        interventions = random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(2, 4))
-        
-        referred_cases.append({
-            "case_id": f"REF_{1000 + i}",
-            "timestamp": datetime.fromtimestamp(base_time + random.randint(0, 30 * 24 * 3600)),
-            "referring_facility": random.choice(["PHC Mawlai", "CHC Smit", "CHC Pynursla"]),
-            "receiving_facility": random.choice(facilities),
-            "patient_age": age,
-            "patient_sex": "F" if case_type == "Maternal" else random.choice(["M", "F"]),
-            "case_type": case_type,
-            "icd_code": icd["icd_code"],
-            "icd_label": icd["label"],
-            "triage_color": triage_color,
-            "vitals": vitals,
-            "interventions_referring": interventions,
-            "status": random.choices(["Accepted", "Rejected", "Pending"], weights=[0.8, 0.1, 0.1])[0],
-        })
-    
-    # Generate received cases
     received_cases = []
-    for i in range(150):
-        base_case = random.choice(referred_cases)
-        
-        received_cases.append({
-            **base_case,
-            "case_id": f"REC_{2000 + i}",
-            "transport_time_minutes": random.randint(20, 90),
-            "interventions_receiving": base_case["interventions_referring"] + random.sample(
-                INTERVENTION_PROTOCOLS[base_case["case_type"]], random.randint(1, 3)
-            ),
-            "final_outcome": random.choices(["Good", "Fair", "Poor"], weights=[0.7, 0.2, 0.1])[0],
-            "length_of_stay_hours": random.randint(24, 240)
-        })
+    
+    base_time = datetime.now() - timedelta(days=days_back)
+    
+    for day in range(days_back):
+        daily_cases = random.randint(3, 8)
+        for case_num in range(daily_cases):
+            case_time = base_time + timedelta(days=day, hours=random.randint(0, 23), minutes=random.randint(0, 59))
+            case_type = random.choice(case_types)
+            age = random.randint(18, 80) if case_type != "Maternal" else random.randint(18, 40)
+            
+            # Generate realistic vitals
+            if case_type == "Maternal":
+                vitals = {
+                    "hr": random.randint(90, 140), "sbp": random.randint(80, 160),
+                    "rr": random.randint(18, 30), "temp": round(random.uniform(36.5, 38.5), 1),
+                    "spo2": random.randint(92, 99), "avpu": "A"
+                }
+            elif case_type == "Trauma":
+                vitals = {
+                    "hr": random.randint(70, 150), "sbp": random.randint(70, 180),
+                    "rr": random.randint(16, 35), "temp": round(random.uniform(36.0, 38.0), 1),
+                    "spo2": random.randint(88, 98), "avpu": random.choices(["A", "V", "P"], weights=[0.7, 0.2, 0.1])[0]
+                }
+            else:
+                vitals = {
+                    "hr": random.randint(80, 140), "sbp": random.randint(90, 150),
+                    "rr": random.randint(18, 32), "temp": round(random.uniform(36.5, 39.0), 1),
+                    "spo2": random.randint(86, 95), "avpu": random.choices(["A", "V"], weights=[0.8, 0.2])[0]
+                }
+            
+            # Select ICD code
+            matching_icd = [icd for icd in ICD_CATALOG if icd["case_type"] == case_type and icd["age_min"] <= age <= icd["age_max"]]
+            icd = random.choice(matching_icd) if matching_icd else random.choice([icd for icd in ICD_CATALOG if icd["case_type"] == case_type])
+            
+            # Generate interventions
+            interventions = random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(2, 4))
+            
+            # Select facilities
+            referring_facility = random.choice(["PHC Mawlai", "CHC Smit", "CHC Pynursla", "Rural Health Center"])
+            receiving_facility = random.choice(facilities)
+            emt_crew = random.choice(EMT_CREW)
+            
+            # Calculate transport details
+            transport_time = random.randint(20, 90)
+            route_coordinates = generate_route_coordinates()
+            
+            case_id = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
+            
+            referred_case = {
+                "case_id": case_id,
+                "timestamp": case_time,
+                "referring_facility": referring_facility,
+                "receiving_facility": receiving_facility["name"],
+                "patient_age": age,
+                "patient_sex": "F" if case_type == "Maternal" else random.choice(["M", "F"]),
+                "case_type": case_type,
+                "icd_code": icd["icd_code"],
+                "icd_label": icd["label"],
+                "triage_color": random.choices(["RED", "YELLOW", "GREEN"], weights=[0.3, 0.5, 0.2])[0],
+                "vitals": vitals,
+                "interventions_referring": interventions,
+                "status": random.choices(["Accepted", "Rejected", "Pending"], weights=[0.8, 0.1, 0.1])[0],
+                "clinical_notes": f"Patient presented with {case_type.lower()} symptoms requiring specialist care"
+            }
+            
+            received_case = {
+                **referred_case,
+                "case_id": case_id.replace("REF", "REC"),
+                "transport_time_minutes": transport_time,
+                "emt_crew": emt_crew,
+                "vehicle_id": emt_crew["vehicle"],
+                "route_coordinates": route_coordinates,
+                "interventions_receiving": interventions + random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(1, 3)),
+                "final_outcome": random.choices(["Excellent", "Good", "Fair", "Poor"], weights=[0.4, 0.3, 0.2, 0.1])[0],
+                "length_of_stay_hours": random.randint(24, 240),
+                "discharge_date": case_time + timedelta(hours=random.randint(24, 240))
+            }
+            
+            referred_cases.append(referred_case)
+            received_cases.append(received_case)
     
     return {
         "referred_cases": pd.DataFrame(referred_cases),
         "received_cases": pd.DataFrame(received_cases),
-        "facilities": facilities
+        "facilities": facilities,
+        "emt_crews": EMT_CREW
     }
 
-# === DASHBOARD COMPONENTS ===
-def triaging_tool_interface():
-    """Interactive triaging tool"""
-    st.markdown("### 🏥 Real-Time Triaging Tool")
-    
-    with st.form("triage_assessment"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("Patient Details")
-            age = st.number_input("Age", 0, 120, 35)
-            sex = st.selectbox("Sex", ["Male", "Female", "Other"])
-            pregnant = st.checkbox("Pregnant") if sex == "Female" else False
-            chief_complaint = st.selectbox("Chief Complaint", 
-                                         ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"])
-            
-        with col2:
-            st.subheader("Vital Signs")
-            hr = st.number_input("Heart Rate", 20, 240, 80)
-            sbp = st.number_input("SBP", 50, 260, 120)
-            rr = st.number_input("Respiratory Rate", 5, 60, 16)
-            temp = st.number_input("Temperature °C", 32.0, 42.0, 37.0, step=0.1)
-            spo2 = st.number_input("SpO₂ %", 50, 100, 98)
-            avpu = st.selectbox("AVPU", ["A", "V", "P", "U"])
-        
-        col3, col4 = st.columns(2)
-        with col3:
-            o2_device = st.selectbox("O₂ Device", ["Air", "O2"])
-            spo2_scale = st.selectbox("SpO₂ Scale", [1, 2])
-        with col4:
-            infection_suspected = st.checkbox("Infection Suspected")
-            behavior = st.selectbox("Behavior (PEWS)", ["Normal", "Irritable", "Lethargic"])
-        
-        if st.form_submit_button("Calculate Triage Score", type="primary"):
-            vitals = {"hr": hr, "rr": rr, "sbp": sbp, "temp": temp, "spo2": spo2, "avpu": avpu}
-            context = {
-                "age": age,
-                "pregnant": pregnant,
-                "infection": infection_suspected,
-                "o2_device": o2_device,
-                "spo2_scale": spo2_scale,
-                "behavior": behavior
-            }
-            
-            triage_color, score_details = triage_decision(vitals, context)
-            
-            st.markdown(f"### Triage Decision: **{triage_color}**")
-            
-            if triage_color == "RED":
-                st.error("🚨 CRITICAL: Immediate physician assessment required")
-            elif triage_color == "YELLOW":
-                st.warning("⚠️ URGENT: Assessment within 30 minutes")
-            else:
-                st.success("✅ STABLE: Routine assessment")
-            
-            with st.expander("Score Details"):
-                st.write("**NEWS2 Score:**", score_details["NEWS2"])
-                if infection_suspected:
-                    st.write("**qSOFA Score:**", score_details["qSOFA"])
-                if pregnant:
-                    st.write("**MEOWS Assessment:**", score_details["MEOWS"])
-                if age < 18:
-                    st.write("**PEWS Score:**", score_details["PEWS"])
-                st.write("**Reasons:**", ", ".join(score_details["reasons"]))
+def generate_route_coordinates():
+    """Generate realistic route coordinates"""
+    base_lat, base_lon = 25.578, 91.893
+    coordinates = []
+    for i in range(10):
+        lat = base_lat + random.uniform(-0.02, 0.02)
+        lon = base_lon + random.uniform(-0.02, 0.02)
+        coordinates.append([lat, lon])
+    return coordinates
 
-def intervention_dashboard(data, dashboard_mode):
-    """Intervention management dashboard"""
-    st.markdown("### 💊 Intervention Management")
+# === PREMIUM DASHBOARD COMPONENTS ===
+def render_premium_header():
+    """Render premium header with key metrics"""
+    st.markdown("""
+    <div class="main-header">
+        <h1 style="margin:0; font-size:2.5rem;">🏥 AHECN Hospital Command Center</h1>
+        <p style="margin:0; font-size:1.2rem; opacity:0.9;">Advanced Emergency Care Coordination Platform</p>
+    </div>
+    """, unsafe_allow_html=True)
     
-    if dashboard_mode == "📤 Referring Center":
-        st.info("**Referring Facility Interventions**")
-        recent_cases = data["referred_cases"].tail(5)
-        
-        for _, case in recent_cases.iterrows():
-            with st.expander(f"{case['case_id']} - {case['icd_label']} ({case['triage_color']})"):
-                st.write("**Interventions Applied:**")
-                for intervention in case['interventions_referring']:
-                    st.write(f"✅ {intervention}")
-    
-    else:
-        st.info("**Receiving Facility Interventions**")
-        recent_cases = data["received_cases"].tail(5)
-        
-        for _, case in recent_cases.iterrows():
-            with st.expander(f"{case['case_id']} - {case['icd_label']}"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write("**Referring Interventions:**")
-                    for iv in case['interventions_referring']:
-                        st.write(f"• {iv}")
-                with col2:
-                    st.write("**Receiving Interventions:**")
-                    for iv in case['interventions_receiving']:
-                        st.write(f"• {iv}")
-                st.metric("Outcome", case['final_outcome'])
-
-def enhanced_analytical_tools(data):
-    """Advanced analytics dashboard"""
-    st.markdown("### 📊 Advanced Medical Analytics")
-    
-    col1, col2 = st.columns(2)
+    # Key metrics row
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        # Triage distribution
-        triage_counts = data["referred_cases"]["triage_color"].value_counts()
-        fig = px.pie(values=triage_counts.values, names=triage_counts.index,
-                    color=triage_counts.index,
-                    color_discrete_map={'RED': 'red', 'YELLOW': 'yellow', 'GREEN': 'green'})
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("""
+        <div class="metric-highlight">
+            <div style="font-size:2rem; font-weight:bold;">47</div>
+            <div>Active Cases</div>
+        </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        # Case type distribution
-        case_counts = data["referred_cases"]["case_type"].value_counts()
-        fig = px.bar(x=case_counts.values, y=case_counts.index, orientation='h',
-                    title="Cases by Type")
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("""
+        <div class="metric-highlight">
+            <div style="font-size:2rem; font-weight:bold;">12</div>
+            <div>Critical RED</div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Key metrics
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Cases", len(data["referred_cases"]))
-    col2.metric("Critical Cases", len(data["referred_cases"][data["referred_cases"]["triage_color"] == "RED"]))
-    col3.metric("Avg Transport Time", f"{data['received_cases']['transport_time_minutes'].mean():.1f} min")
-
-# === MAIN APP ===
-def main():
-    st.title("🏥 AHECN Hospital Dashboard MVP")
-    st.markdown("### Complete Medical Dashboard with Triaging & Analytics")
+    with col3:
+        st.markdown("""
+        <div class="metric-highlight">
+            <div style="font-size:2rem; font-weight:bold;">28</div>
+            <div>Urgent YELLOW</div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Initialize session state
-    if 'medical_data' not in st.session_state:
-        st.session_state.medical_data = generate_comprehensive_synthetic_data()
+    with col4:
+        st.markdown("""
+        <div class="metric-highlight">
+            <div style="font-size:2rem; font-weight:bold;">92%</div>
+            <div>Acceptance Rate</div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    # Dashboard selector
-    dashboard_mode = st.radio(
-        "**Dashboard Mode:**",
-        ["🏥 Receiving Center", "📤 Referring Center", "🔬 Triaging Tool", "📊 Analytics"],
-        horizontal=True
-    )
-    
-    st.markdown("---")
-    
-    if dashboard_mode == "🔬 Triaging Tool":
-        triaging_tool_interface()
-        
-    elif dashboard_mode == "📊 Analytics":
-        enhanced_analytical_tools(st.session_state.medical_data)
-        
-    else:
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            if dashboard_mode == "🏥 Receiving Center":
-                render_receiving_center()
-            else:
-                render_referring_center()
-        
-        with col2:
-            intervention_dashboard(st.session_state.medical_data, dashboard_mode)
-
-def render_receiving_center():
-    """Receiving center view"""
-    st.info("**Receiving Center Dashboard**")
-    
-    # Capacity metrics
-    st.subheader("Current Capacity")
-    cap_cols = st.columns(4)
-    cap_cols[0].metric("ICU Beds", "8/12", "67%")
-    cap_cols[1].metric("ED Beds", "15/25", "60%")
-    cap_cols[2].metric("Ventilators", "4/8", "50%")
-    cap_cols[3].metric("Specialists", "3/5", "-2")
-    
-    # Incoming cases
-    st.subheader("Incoming Cases")
-    incoming = st.session_state.medical_data["referred_cases"].tail(5)
-    
-    for _, case in incoming.iterrows():
-        triage_class = f"triage-{case['triage_color'].lower()}"
-        st.markdown(f"""
-        <div class="card {triage_class}">
-            <strong>{case['case_id']}</strong> | {case['icd_label']} | {case['triage_color']}<br>
-            From: {case['referring_facility']} | Age: {case['patient_age']}{case['patient_sex']}<br>
-            Vitals: HR {case['vitals']['hr']} | SBP {case['vitals']['sbp']} | SpO2 {case['vitals']['spo2']}%
+    with col5:
+        st.markdown("""
+        <div class="metric-highlight">
+            <div style="font-size:2rem; font-weight:bold;">34m</div>
+            <div>Avg Response</div>
         </div>
         """, unsafe_allow_html=True)
 
-def render_referring_center():
-    """Referring center view"""
-    st.info("**Referring Center Dashboard**")
+def render_case_calendar(data):
+    """Interactive calendar for case management"""
+    st.markdown("### 📅 Case Calendar & Timeline")
     
-    # Quick referral
-    st.subheader("Quick Referral")
-    with st.form("quick_referral"):
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Date range selector
+        date_range = st.date_input(
+            "Select Date Range",
+            [datetime.now().date() - timedelta(days=7), datetime.now().date()],
+            key="date_range_selector"
+        )
+        
+        # Filter cases by date range
+        filtered_referred = data["referred_cases"][
+            (data["referred_cases"]["timestamp"].dt.date >= date_range[0]) &
+            (data["referred_cases"]["timestamp"].dt.date <= date_range[1])
+        ]
+        
+        # Case timeline visualization
+        timeline_data = filtered_referred.groupby(filtered_referred["timestamp"].dt.date).size().reset_index(name='count')
+        fig = px.line(timeline_data, x='timestamp', y='count', 
+                     title="Daily Case Volume Trend",
+                     markers=True)
+        fig.update_layout(height=300)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.markdown("#### Quick Filters")
+        
+        # Case type filter
+        case_types = st.multiselect(
+            "Case Types",
+            ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"],
+            default=["Maternal", "Trauma", "Cardiac"]
+        )
+        
+        # Triage filter
+        triage_levels = st.multiselect(
+            "Triage Levels",
+            ["RED", "YELLOW", "GREEN"],
+            default=["RED", "YELLOW"]
+        )
+        
+        # Facility filter
+        facilities = st.multiselect(
+            "Receiving Facilities",
+            ["Tertiary Central Hospital", "District North General", "Specialty South Medical", "Trauma East Center"],
+            default=["Tertiary Central Hospital"]
+        )
+        
+        if st.button("Apply Filters", type="primary"):
+            st.success(f"Filtered {len(filtered_referred)} cases")
+
+def render_interactive_case_list(data, case_type="referred"):
+    """Interactive case list with detailed views"""
+    st.markdown(f"### 📋 {'Referred' if case_type == 'referred' else 'Received'} Cases")
+    
+    cases_df = data[f"{case_type}_cases"]
+    
+    # Search and filter
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        search_term = st.text_input("🔍 Search cases...", placeholder="Search by case ID, facility, or diagnosis")
+    
+    with col2:
+        sort_by = st.selectbox("Sort by", ["Timestamp", "Triage", "Case Type"])
+    
+    with col3:
+        items_per_page = st.selectbox("Items per page", [10, 25, 50], index=0)
+    
+    # Filter cases based on search
+    if search_term:
+        filtered_cases = cases_df[
+            cases_df["case_id"].str.contains(search_term, case=False) |
+            cases_df["referring_facility"].str.contains(search_term, case=False) |
+            cases_df["icd_label"].str.contains(search_term, case=False)
+        ]
+    else:
+        filtered_cases = cases_df.copy()
+    
+    # Sort cases
+    if sort_by == "Timestamp":
+        filtered_cases = filtered_cases.sort_values("timestamp", ascending=False)
+    elif sort_by == "Triage":
+        filtered_cases = filtered_cases.sort_values("triage_color", ascending=True)
+    else:
+        filtered_cases = filtered_cases.sort_values("case_type", ascending=True)
+    
+    # Pagination
+    total_pages = max(1, len(filtered_cases) // items_per_page)
+    page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1)
+    
+    start_idx = (page_number - 1) * items_per_page
+    end_idx = start_idx + items_per_page
+    paginated_cases = filtered_cases.iloc[start_idx:end_idx]
+    
+    # Display cases
+    for idx, case in paginated_cases.iterrows():
+        case_class = f"case-card {case['triage_color'].lower()}"
+        
+        with st.container():
+            st.markdown(f"""
+            <div class="{case_class}" onclick="selectCase('{case['case_id']}')">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong>{case['case_id']}</strong> • {case['icd_label']}
+                    </div>
+                    <div style="background: {'#ff4444' if case['triage_color'] == 'RED' else '#ffaa00' if case['triage_color'] == 'YELLOW' else '#00c853'}; 
+                                color: white; padding: 0.2rem 0.8rem; border-radius: 15px; font-size: 0.8rem;">
+                        {case['triage_color']}
+                    </div>
+                </div>
+                <div style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">
+                    {case['referring_facility']} → {case['receiving_facility']} • 
+                    {case['timestamp'].strftime('%Y-%m-%d %H:%M')} • 
+                    {case['patient_age']}{case['patient_sex']}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Case details expander
+            with st.expander(f"View full details for {case['case_id']}", expanded=False):
+                render_case_details(case, case_type)
+
+def render_case_details(case, case_type):
+    """Render detailed case information"""
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.markdown("#### Patient Information")
+        st.write(f"**Case ID:** {case['case_id']}")
+        st.write(f"**Age/Sex:** {case['patient_age']}{case['patient_sex']}")
+        st.write(f"**Diagnosis:** {case['icd_label']} ({case['icd_code']})")
+        st.write(f"**Triage:** {case['triage_color']}")
+        st.write(f"**Referring Facility:** {case['referring_facility']}")
+        st.write(f"**Receiving Facility:** {case['receiving_facility']}")
+        
+        st.markdown("#### Vital Signs")
+        vitals = case['vitals']
+        st.write(f"**HR:** {vitals['hr']} bpm | **SBP:** {vitals['sbp']} mmHg")
+        st.write(f"**RR:** {vitals['rr']} rpm | **SpO2:** {vitals['spo2']}%")
+        st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
+    
+    with col2:
+        st.markdown("#### Timeline & Interventions")
+        
+        # Interventions timeline
+        st.markdown("**Referring Interventions:**")
+        for intervention in case['interventions_referring']:
+            st.markdown(f'<div class="intervention-badge">{intervention}</div>', unsafe_allow_html=True)
+        
+        if case_type == "received":
+            st.markdown("**Receiving Interventions:**")
+            for intervention in case['interventions_receiving']:
+                st.markdown(f'<div class="intervention-badge">{intervention}</div>', unsafe_allow_html=True)
+            
+            st.markdown("#### Transport Details")
+            st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
+            st.write(f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})")
+            st.write(f"**Vehicle:** {case['vehicle_id']}")
+            st.write(f"**Outcome:** {case['final_outcome']}")
+            st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
+            
+            # Route visualization
+            if case.get('route_coordinates'):
+                st.markdown("#### Transport Route")
+                render_route_map(case['route_coordinates'])
+
+def render_route_map(coordinates):
+    """Render interactive route map"""
+    if coordinates:
+        m = folium.Map(location=coordinates[0], zoom_start=12)
+        
+        # Add route line
+        folium.PolyLine(
+            coordinates,
+            weight=5,
+            color='blue',
+            opacity=0.7
+        ).add_to(m)
+        
+        # Add start and end markers
+        folium.Marker(
+            coordinates[0],
+            popup='Pickup Location',
+            icon=folium.Icon(color='green', icon='play')
+        ).add_to(m)
+        
+        folium.Marker(
+            coordinates[-1],
+            popup='Destination Hospital',
+            icon=folium.Icon(color='red', icon='hospital-o')
+        ).add_to(m)
+        
+        folium_static(m, width=400, height=300)
+
+def render_advanced_analytics(data):
+    """Premium analytics dashboard"""
+    st.markdown("### 📊 Advanced Analytics Dashboard")
+    
+    # Overview metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        total_cases = len(data["referred_cases"])
+        st.metric("Total Cases", total_cases)
+    
+    with col2:
+        acceptance_rate = (len(data["referred_cases"][data["referred_cases"]["status"] == "Accepted"]) / total_cases) * 100
+        st.metric("Acceptance Rate", f"{acceptance_rate:.1f}%")
+    
+    with col3:
+        avg_transport = data["received_cases"]["transport_time_minutes"].mean()
+        st.metric("Avg Transport Time", f"{avg_transport:.1f} min")
+    
+    with col4:
+        critical_cases = len(data["referred_cases"][data["referred_cases"]["triage_color"] == "RED"])
+        st.metric("Critical Cases", critical_cases)
+    
+    # Advanced charts
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Case type distribution with outcomes
+        st.markdown("#### Case Type Analysis")
+        case_outcomes = data["received_cases"].groupby(['case_type', 'final_outcome']).size().unstack(fill_value=0)
+        fig = px.bar(case_outcomes, barmode='stack', title="Case Outcomes by Type")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Triage efficiency
+        st.markdown("#### Triage Efficiency")
+        triage_times = data["received_cases"].groupby('triage_color')['transport_time_minutes'].mean().reset_index()
+        fig = px.bar(triage_times, x='triage_color', y='transport_time_minutes', 
+                    color='triage_color', title="Average Transport Time by Triage")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Performance metrics
+    st.markdown("#### Performance Trends")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # Weekly trends
+        weekly_data = data["referred_cases"].copy()
+        weekly_data['week'] = weekly_data['timestamp'].dt.isocalendar().week
+        weekly_trends = weekly_data.groupby('week').size()
+        fig = px.line(x=weekly_trends.index, y=weekly_trends.values, title="Weekly Case Volume")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        # Facility performance
+        facility_performance = data["referred_cases"]["receiving_facility"].value_counts()
+        fig = px.pie(values=facility_performance.values, names=facility_performance.index, 
+                    title="Case Distribution by Facility")
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with col3:
+        # Outcome analysis
+        outcome_dist = data["received_cases"]["final_outcome"].value_counts()
+        fig = px.bar(x=outcome_dist.values, y=outcome_dist.index, orientation='h',
+                    title="Patient Outcomes Distribution")
+        st.plotly_chart(fig, use_container_width=True)
+
+def render_emt_tracking(data):
+    """Real-time EMT and ambulance tracking"""
+    st.markdown("### 🚑 Real-time EMT Tracking")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Active transports
+        st.markdown("#### Active Transports")
+        active_transports = data["received_cases"].tail(3)  # Simulate active transports
+        
+        for _, transport in active_transports.iterrows():
+            progress = random.randint(30, 90)
+            
+            st.markdown(f"""
+            <div class="premium-card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong>{transport['case_id']}</strong><br>
+                        <small>{transport['emt_crew']['name']} • {transport['vehicle_id']}</small>
+                    </div>
+                    <div style="background: #e3f2fd; padding: 0.5rem 1rem; border-radius: 10px;">
+                        {progress}% Complete
+                    </div>
+                </div>
+                <div style="margin-top: 1rem;">
+                    <div style="background: #f0f0f0; border-radius: 10px; height: 10px;">
+                        <div style="background: #2196f3; width: {progress}%; height: 100%; border-radius: 10px;"></div>
+                    </div>
+                </div>
+                <div style="margin-top: 0.5rem; font-size: 0.9rem; color: #666;">
+                    ETA: {transport['transport_time_minutes']} min • {transport['referring_facility']} → {transport['receiving_facility']}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    with col2:
+        # EMT crew status
+        st.markdown("#### Crew Status")
+        for crew in data["emt_crews"]:
+            status_color = "🟢" if crew["status"] == "active" else "🟡" if crew["status"] == "available" else "🔴"
+            st.write(f"{status_color} **{crew['name']}**")
+            st.write(f"   {crew['level']} • {crew['vehicle']}")
+            st.write("---")
+
+# === MAIN PREMIUM DASHBOARD ===
+def main():
+    # Initialize session state
+    if 'premium_data' not in st.session_state:
+        st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
+    
+    # Render premium header
+    render_premium_header()
+    
+    # Main navigation tabs
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🏠 Dashboard", 
+        "📤 Referred Cases", 
+        "🏥 Received Cases", 
+        "📊 Analytics", 
+        "🚑 EMT Tracking",
+        "⚡ Quick Actions"
+    ])
+    
+    with tab1:
+        render_dashboard_overview()
+    
+    with tab2:
+        render_interactive_case_list(st.session_state.premium_data, "referred")
+    
+    with tab3:
+        render_interactive_case_list(st.session_state.premium_data, "received")
+    
+    with tab4:
+        render_advanced_analytics(st.session_state.premium_data)
+    
+    with tab5:
+        render_emt_tracking(st.session_state.premium_data)
+    
+    with tab6:
+        render_quick_actions()
+    
+    # Sidebar
+    render_premium_sidebar()
+
+def render_dashboard_overview():
+    """Main dashboard overview"""
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Case calendar and timeline
+        render_case_calendar(st.session_state.premium_data)
+        
+        # Recent activity
+        st.markdown("### 📈 Recent Activity")
+        recent_cases = st.session_state.premium_data["referred_cases"].tail(10)
+        
+        for _, case in recent_cases.iterrows():
+            st.markdown(f"""
+            <div class="timeline-event">
+                <strong>{case['case_id']}</strong> - {case['icd_label']}<br>
+                <small>{case['timestamp'].strftime('%Y-%m-%d %H:%M')} • {case['triage_color']} • {case['referring_facility']}</small>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    with col2:
+        # System status
+        st.markdown("### 🖥️ System Status")
+        
+        status_items = [
+            {"name": "Database", "status": "Optimal", "color": "success"},
+            {"name": "API Services", "status": "Stable", "color": "success"},
+            {"name": "EMT Tracking", "status": "Active", "color": "success"},
+            {"name": "Analytics", "status": "Processing", "color": "warning"},
+        ]
+        
+        for item in status_items:
+            st.markdown(f"""
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0;">
+                <span>{item['name']}</span>
+                <span style="background: {'#00c853' if item['color'] == 'success' else '#ffab00'}; 
+                            color: white; padding: 0.2rem 0.8rem; border-radius: 15px; font-size: 0.8rem;">
+                    {item['status']}
+                </span>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        # Quick stats
+        st.markdown("### 📋 Quick Stats")
+        stats = st.session_state.premium_data["referred_cases"]
+        
+        st.metric("Cases Today", len(stats[stats["timestamp"].dt.date == datetime.now().date()]))
+        st.metric("Cases This Week", len(stats[stats["timestamp"].dt.isocalendar().week == datetime.now().isocalendar()[1]]))
+        st.metric("Critical Pending", len(stats[(stats["triage_color"] == "RED") & (stats["status"] == "Pending")]))
+
+def render_quick_actions():
+    """Quick action buttons for common tasks"""
+    st.markdown("### ⚡ Quick Actions")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔄 Refresh All Data", use_container_width=True):
+            st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
+            st.success("Data refreshed successfully!")
+        
+        if st.button("📊 Generate Report", use_container_width=True):
+            st.info("Generating comprehensive report...")
+    
+    with col2:
+        if st.button("🚨 Emergency Mode", use_container_width=True, type="secondary"):
+            st.warning("Emergency mode activated - prioritizing critical cases")
+        
+        if st.button("📋 Case Summary", use_container_width=True):
+            st.info("Displaying case summary...")
+    
+    with col3:
+        if st.button("📧 Notify Staff", use_container_width=True):
+            st.success("Staff notification sent!")
+        
+        if st.button("🖨️ Export Data", use_container_width=True):
+            st.info("Preparing data export...")
+    
+    # Quick referral form
+    st.markdown("### 🏃 Quick Referral")
+    with st.form("quick_referral_form"):
         col1, col2 = st.columns(2)
+        
         with col1:
-            case_type = st.selectbox("Case Type", ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"])
-            age = st.number_input("Patient Age", 0, 120, 35)
+            patient_name = st.text_input("Patient Name")
+            age = st.number_input("Age", 1, 120, 35)
+            chief_complaint = st.selectbox("Chief Complaint", ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"])
+        
         with col2:
             hr = st.number_input("Heart Rate", 20, 240, 80)
             sbp = st.number_input("SBP", 50, 260, 120)
+            spo2 = st.number_input("SpO₂", 50, 100, 98)
         
-        if st.form_submit_button("🚀 Find Optimal Facility"):
-            vitals = {"hr": hr, "sbp": sbp, "rr": 16, "temp": 37.0, "spo2": 98, "avpu": "A"}
-            context = {"age": age, "pregnant": False, "infection": False}
-            triage_color, _ = triage_decision(vitals, context)
-            st.success(f"Recommended: Tertiary Central Hospital | Triage: {triage_color}")
+        clinical_notes = st.text_area("Clinical Notes")
+        
+        if st.form_submit_button("🚀 Create Emergency Referral", type="primary"):
+            st.success(f"Emergency referral created for {patient_name}!")
 
-# Sidebar
-def render_sidebar():
-    st.sidebar.title("AHECN Dashboard")
+def render_premium_sidebar():
+    """Premium sidebar with additional features"""
+    st.sidebar.markdown("### 🔔 Live Alerts")
+    
+    # Critical alerts
+    critical_cases = st.session_state.premium_data["referred_cases"][
+        st.session_state.premium_data["referred_cases"]["triage_color"] == "RED"
+    ].tail(3)
+    
+    for _, case in critical_cases.iterrows():
+        st.sidebar.error(f"""
+        **{case['case_id']}**
+        {case['icd_label']}
+        *{case['timestamp'].strftime('%H:%M')} • {case['referring_facility']}*
+        """)
+    
     st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📈 Performance")
     
-    st.sidebar.info("**System Status**")
-    st.sidebar.metric("Data Integrity", "100%")
-    st.sidebar.metric("Uptime", "99.8%")
+    # Performance metrics
+    metrics = st.session_state.premium_data["referred_cases"]
+    st.sidebar.metric("Response Rate", "94%", "2%")
+    st.sidebar.metric("Avg Decision Time", "8.2min", "-1.3min")
+    st.sidebar.metric("System Uptime", "99.9%", "0%")
     
-    if st.sidebar.button("🔄 Refresh Data"):
-        st.session_state.medical_data = generate_comprehensive_synthetic_data()
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🛠️ Tools")
+    
+    if st.sidebar.button("🔄 Force Refresh", key="sidebar_refresh"):
+        st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
         st.rerun()
+    
+    if st.sidebar.button("📋 Data Summary", key="sidebar_summary"):
+        st.info("Displaying data summary...")
 
 if __name__ == "__main__":
     main()
-    render_sidebar()
