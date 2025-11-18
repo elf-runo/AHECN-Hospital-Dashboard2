@@ -262,6 +262,7 @@ def initialize_session_state():
             "start_date": datetime.now().date() - timedelta(days=7),
             "end_date": datetime.now().date()
         }
+
 # === UNIQUE KEY GENERATOR ===
 def get_unique_key(component_type, case_type, case_data, extra_suffix=""):
     """Generate truly unique keys for Streamlit components"""
@@ -402,7 +403,7 @@ def render_interactive_case_list(case_type="referred"):
     """Interactive case list with detailed views - FIXED DUPLICATE KEYS"""
     
     # Create unique key prefix for this case list
-    key_prefix = f"{case_type}_cases_{id(st.session_state.premium_data)}"
+    key_prefix = f"{case_type}_cases"
     
     st.markdown(f"### 📋 {'Referred' if case_type == 'referred' else 'Received'} Cases")
     
@@ -469,18 +470,18 @@ def render_interactive_case_list(case_type="referred"):
         
         st.write(f"Showing {len(paginated_cases)} of {len(filtered_cases)} cases")
         
-        # Display cases
+        # Display cases - FIX: Use enumerate to get unique display index
         for display_idx, (idx, case) in enumerate(paginated_cases.iterrows()):
-            render_case_card(case, case_type, display_idx)
+            render_case_card(case, case_type, display_idx, page_number)
     else:
         st.info("No cases found matching the current filters")
-
-def render_case_card(case, case_type, index):
+        
+def render_case_card(case, case_type, display_idx, page_number):
     """Render individual case card with unique keys"""
     case_class = f"case-card {case['triage_color'].lower()}"
     
-    # Use the new unique key generator
-    unique_key = get_unique_key("case_expander", case_type, case)
+    # Create a truly unique key using case_id, page number, and display index
+    unique_key = f"case_details_{case_type}_{case['case_id']}_p{page_number}_i{display_idx}"
     
     with st.container():
         st.markdown(f"""
@@ -502,8 +503,7 @@ def render_case_card(case, case_type, index):
         </div>
         """, unsafe_allow_html=True)
         
-        # Case details expander with UNIQUE key using the new generator
-        unique_key = get_unique_key("case_expander", case_type, case)
+        # Case details expander with UNIQUE key
         with st.expander(f"View full details for {case['case_id']}", key=unique_key):
             render_case_details(case, case_type)
             
@@ -852,6 +852,3 @@ def main():
     
     # Sidebar
     render_premium_sidebar()
-
-if __name__ == "__main__":
-    main()
