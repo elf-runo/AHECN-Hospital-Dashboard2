@@ -17,7 +17,11 @@ try:
     import joblib  # for loading the ML model
 except ImportError:
     joblib = None
-
+# get_unique_key FUNCTION (ADD THIS)
+def get_unique_key(prefix, case_type, case):
+    """Generate a unique key for Streamlit buttons to avoid conflicts"""
+    return f"{prefix}_{case_type}_{case['case_id']}"
+    
 # === AI MODEL LOADING (WITH CACHE) ===
 @st.cache_resource
 def load_triage_model():
@@ -659,11 +663,8 @@ def render_case_details(case, case_type):
     # === AI-Driven Clinical Recommendation ===
     st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
-    # Load model (this will show explicit errors if something is wrong)
+    # Load model
     model = load_triage_model()
-    
-    # Debug information
-    st.write("Model object:", model)
 
     vitals = case["vitals"]
     age = case["patient_age"]
@@ -688,8 +689,22 @@ def render_case_details(case, case_type):
 
     if st.button("Get AI triage suggestion", key=ai_button_key):
         try:
+            # Debug: Check variable types and values
+            st.write(f"Debug - Age: {age} (type: {type(age)})")
+            st.write(f"Debug - SBP: {sbp} (type: {type(sbp)})")
+            st.write(f"Debug - SpO2: {spo2} (type: {type(spo2)})")
+            st.write(f"Debug - HR: {hr} (type: {type(hr)})")
+            
+            # Convert to proper numeric types and handle None values
+            age_val = float(age) if age is not None else 0
+            sbp_val = float(sbp) if sbp is not None else 0
+            spo2_val = float(spo2) if spo2 is not None else 0
+            hr_val = float(hr) if hr is not None else 0
+            
             # Features must match how the model was trained: [age, sbp, spo2, hr]
-            X = np.array([[age, sbp, spo2, hr]])
+            X = np.array([[age_val, sbp_val, spo2_val, hr_val]])
+            st.write(f"Debug - Input array: {X}")
+            
             pred = model.predict(X)[0]
 
             # Human-readable explanation
