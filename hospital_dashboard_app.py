@@ -24,26 +24,21 @@ def get_unique_key(prefix, case_type, case):
     
 # === AI MODEL LOADING (WITH CACHE) ===
 @st.cache_resource
+@st.cache_resource
 def load_triage_model():
     """
     Load the pre-trained model if possible.
     """
     try:
         if joblib is None:
-            st.error("joblib is not available")
             return None
             
         model_path = "my_model.pkl"
-        st.write(f"Looking for model at: {model_path}")
-        st.write(f"Current directory: {os.getcwd()}")
-        st.write(f"Files in directory: {os.listdir('.')}")
         
         if not os.path.exists(model_path):
-            st.error(f"Model file not found at: {model_path}")
             return None
 
         model = joblib.load(model_path)
-        st.success("Model loaded successfully!")
         return model
         
     except Exception as e:
@@ -612,6 +607,7 @@ def render_case_card(case, case_type, index):
         # Let Streamlit manage the expander key
         with st.expander(f"View full details for {case['case_id']}"):
             render_case_details(case, case_type)
+            
 def render_case_details(case, case_type):
     """Render detailed case information"""
     col1, col2 = st.columns([1, 1])
@@ -663,7 +659,7 @@ def render_case_details(case, case_type):
     # === AI-Driven Clinical Recommendation ===
     st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
-    # Load model
+    # Load model (this will show explicit errors if something is wrong)
     model = load_triage_model()
 
     vitals = case["vitals"]
@@ -740,7 +736,7 @@ def render_case_details(case, case_type):
         except Exception as e:
             st.error("Error while running the AI model.")
             st.write("Prediction error (debug):", repr(e))
-
+            
 def render_advanced_analytics():
     """Premium analytics dashboard"""
     st.markdown("### 📊 Advanced Analytics Dashboard")
