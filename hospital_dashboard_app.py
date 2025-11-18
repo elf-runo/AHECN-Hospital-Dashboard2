@@ -622,11 +622,10 @@ def render_case_card(case, case_type, index):
             render_case_details(case, case_type)
 
 def render_case_details(case, case_type):
-    """Render detailed case information + AI recommender & feedback"""
+    """Render detailed case information"""
     col1, col2 = st.columns([1, 1])
 
-    vitals = case['vitals']
-
+    # LEFT COLUMN: patient + vitals
     with col1:
         st.markdown("#### Patient Information")
         st.write(f"**Case ID:** {case['case_id']}")
@@ -637,37 +636,66 @@ def render_case_details(case, case_type):
         st.write(f"**Receiving Facility:** {case['receiving_facility']}")
 
         st.markdown("#### Vital Signs")
+        vitals = case["vitals"]
         st.write(f"**HR:** {vitals['hr']} bpm | **SBP:** {vitals['sbp']} mmHg")
         st.write(f"**RR:** {vitals['rr']} rpm | **SpO₂:** {vitals['spo2']}%")
         st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
 
-         # === AI-Driven Clinical Recommendation ===
-         st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
+    # RIGHT COLUMN: interventions + transport
+    with col2:
+        st.markdown("#### Timeline & Interventions")
 
-         model = load_triage_model()
-         vitals = case["vitals"]
+        st.markdown("**Referring Interventions:**")
+        for intervention in case["interventions_referring"]:
+            st.markdown(
+                f'<div class="intervention-badge">{intervention}</div>',
+                unsafe_allow_html=True,
+            )
 
-         if model is None:
-             # Message if we couldn't load the model
-             st.info(
-                 "AI model not available. Please ensure 'my_model.pkl' is present, "
-                 "compatible, and that joblib is installed."
-     )
-         else:
-             # Features must match how the model was trained (age, SBP, SpO2, HR)
-             X = np.array([[case["patient_age"], vitals["sbp"], vitals["spo2"], vitals["hr"]]])
+        if case_type == "received":
+            st.markdown("**Receiving Interventions:**")
+            for intervention in case["interventions_receiving"]:
+                st.markdown(
+                    f'<div class="intervention-badge">{intervention}</div>',
+                    unsafe_allow_html=True,
+                )
 
-             # Unique key so buttons don't clash across cases
-             ai_button_key = get_unique_key("ai_button", case_type, case)
+            st.markdown("#### Transport Details")
+            st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
+            st.write(
+                f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})"
+            )
+            st.write(f"**Vehicle:** {case['vehicle_id']}")
+            st.write(f"**Outcome:** {case['final_outcome']}")
+            st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
 
-             if st.button("Get AI Recommendation", key=ai_button_key):
-                 try:
-                     pred = model.predict(X)
-                     st.success(f"AI Recommendation: {pred[0]}")
-                 except Exception as e:
-                     st.error("Error while running the AI model.")
-                     st.write("Prediction error:", e)
+    # === AI-Driven Clinical Recommendation (function-level, NOT indented under 'with') ===
+    st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
+    model = load_triage_model()
+    vitals = case["vitals"]
+
+    if model is None:
+        st.info(
+            "AI model not available. Please ensure 'my_model.pkl' is present, "
+            "compatible, and that joblib is installed."
+        )
+    else:
+        # Features must match how the model was trained (age, SBP, SpO2, HR)
+        X = np.array(
+            [[case["patient_age"], vitals["sbp"], vitals["spo2"], vitals["hr"]]]
+        )
+
+        # Unique key so buttons don't clash across cases
+        ai_button_key = get_unique_key("ai_button", case_type, case)
+
+        if st.button("Get AI Recommendation", key=ai_button_key):
+            try:
+                pred = model.predict(X)
+                st.success(f"AI Recommendation: {pred[0]}")
+            except Exception as e:
+                st.error("Error while running the AI model.")
+                st.write("Prediction error:", e)
 
             # If we have an existing prediction, show it and allow feedback
             current_pred = st.session_state[ai_state_key]["prediction"]
