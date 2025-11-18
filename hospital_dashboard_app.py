@@ -1112,8 +1112,6 @@ def render_premium_sidebar():
         total_cases = len(st.session_state.premium_data["referred_cases"])
         st.sidebar.info(f"Total Cases: {total_cases}")
 
-# === ADD THIS LINE TO CALL THE DIAGNOSTIC PANEL ===
-render_diagnostic_panel()
 def render_diagnostic_panel():
     """Diagnostic information in sidebar"""
     st.sidebar.markdown("---")
