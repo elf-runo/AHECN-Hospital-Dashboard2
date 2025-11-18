@@ -616,7 +616,6 @@ def render_case_card(case, case_type, index):
         # Let Streamlit manage the expander key
         with st.expander(f"View full details for {case['case_id']}"):
             render_case_details(case, case_type)
-
 def render_case_details(case, case_type):
     """Render detailed case information"""
     col1, col2 = st.columns([1, 1])
@@ -668,65 +667,69 @@ def render_case_details(case, case_type):
     # === AI-Driven Clinical Recommendation ===
     st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
-    # Load the model (will also print clear errors if something is wrong)
+    # Load model (this will show explicit errors if something is wrong)
     model = load_triage_model()
-    if model is None:
-        # load_triage_model already showed the reason; nothing more to do here
-        return
 
     vitals = case["vitals"]
+    age = case["patient_age"]
+    sbp = vitals["sbp"]
+    spo2 = vitals["spo2"]
+    hr = vitals["hr"]
 
-    # Features must match how the model was trained (age, SBP, SpO2, HR)
-    X = np.array([[case["patient_age"], vitals["sbp"], vitals["spo2"], vitals["hr"]]])
+    # Show what the AI will look at
+    st.write(
+        f"Using **Age {age} yrs**, **SBP {sbp} mmHg**, **SpO₂ {spo2}%**, **HR {hr} bpm** as inputs."
+    )
 
-    # Unique key so buttons don't clash across cases
+    if model is None:
+        st.info(
+            "AI engine is not available on this deployment (model missing or incompatible). "
+            "Clinical view above remains fully usable."
+        )
+        return
+
+    # Unique key so buttons don't clash between cases
     ai_button_key = get_unique_key("ai_button", case_type, case)
 
-    if st.button("Get AI Recommendation", key=ai_button_key):
+    if st.button("Get AI triage suggestion", key=ai_button_key):
         try:
-            pred = model.predict(X)
-            st.success(f"AI Recommendation: {pred[0]}")
+            # Features must match how the model was trained: [age, sbp, spo2, hr]
+            X = np.array([[age, sbp, spo2, hr]])
+            pred = model.predict(X)[0]
+
+            # Human-readable explanation
+            triage_explanations = {
+                "RED": "RED – treat as critical; immediate specialist attention and fastest possible transfer.",
+                "YELLOW": "YELLOW – urgent but not crashing; monitor closely and prioritize within the next queue.",
+                "GREEN": "GREEN – non-critical; can be queued with routine monitoring.",
+            }
+            msg = triage_explanations.get(str(pred), str(pred))
+
+            color = (
+                "#ff4444" if str(pred) == "RED"
+                else "#ffbb33" if str(pred) == "YELLOW"
+                else "#00C851"
+            )
+
+            st.markdown(
+                f"""
+                <div style="
+                    margin-top:0.7rem;
+                    padding:0.9rem 1.1rem;
+                    border-radius:10px;
+                    background:{color}20;
+                    border-left:6px solid {color};
+                ">
+                    <div><strong>AI Suggested Triage: {pred}</strong></div>
+                    <div style="margin-top:0.3rem;">{msg}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
         except Exception as e:
             st.error("Error while running the AI model.")
-            st.write("Prediction error:", e)
-
-            # If we have an existing prediction, show it and allow feedback
-            current_pred = st.session_state[ai_state_key]["prediction"]
-            current_feats = st.session_state[ai_state_key]["features"]
-
-            if current_pred is not None and current_feats is not None:
-                st.info(f"Latest AI suggestion for this case: **{current_pred}**")
-
-                st.subheader("Was this recommendation helpful?")
-                feedback = st.radio(
-                    "Your Feedback",
-                    ("Yes", "No", "Unsure"),
-                    key=f"ai_fb_{case['case_id']}"
-                )
-
-                if st.button("Submit Feedback", key=f"ai_fb_btn_{case['case_id']}"):
-                    log_ai_feedback(case, current_feats, current_pred, feedback)
-                    st.success("Thank you for your feedback! Logged for model improvement.")
-
-    with col2:
-        st.markdown("#### Timeline & Interventions")
-
-        # Interventions timeline
-        st.markdown("**Referring Interventions:**")
-        for intervention in case['interventions_referring']:
-            st.markdown(f'<span class="intervention-badge">{intervention}</span>', unsafe_allow_html=True)
-
-        if case_type == "received":
-            st.markdown("**Receiving Interventions:**")
-            for intervention in case['interventions_receiving']:
-                st.markdown(f'<span class="intervention-badge">{intervention}</span>', unsafe_allow_html=True)
-
-            st.markdown("#### Transport Details")
-            st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
-            st.write(f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})")
-            st.write(f"**Vehicle:** {case['vehicle_id']}")
-            st.write(f"**Outcome:** {case['final_outcome']}")
-            st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
+            st.write("Prediction error (debug):", repr(e))
 
 def render_advanced_analytics():
     """Premium analytics dashboard"""
