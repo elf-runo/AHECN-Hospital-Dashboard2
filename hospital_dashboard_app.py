@@ -18,41 +18,33 @@ try:
 except ImportError:
     joblib = None
 
-
+# === AI MODEL LOADING (WITH CACHE) ===
+@st.cache_resource
 def load_triage_model():
     """
-    Load the trained triage model from my_model.pkl.
-
-    Looks for the file in the same folder as hospital_dashboard_app.py.
-    If anything goes wrong, returns None and shows a clear message in the UI.
+    Load the pre-trained model if possible.
     """
-    # If joblib isn't available, we can't load the model
-    if joblib is None:
-        st.error("AI model not available: joblib is not installed in this environment.")
-        return None
-
     try:
-        # Resolve path relative to this file
-        app_dir = Path(__file__).resolve().parent
-        model_path = app_dir / "my_model.pkl"
-
-        # Debug path (will show up in the app once, helpful for us)
-        st.write("AI model path (debug):", str(model_path))
-
-        if not model_path.exists():
-            st.error(
-                f"AI model not available: '{model_path.name}' not found in the app folder."
-            )
+        if joblib is None:
+            st.error("joblib is not available")
+            return None
+            
+        model_path = "my_model.pkl"
+        st.write(f"Looking for model at: {model_path}")
+        st.write(f"Current directory: {os.getcwd()}")
+        st.write(f"Files in directory: {os.listdir('.')}")
+        
+        if not os.path.exists(model_path):
+            st.error(f"Model file not found at: {model_path}")
             return None
 
         model = joblib.load(model_path)
+        st.success("Model loaded successfully!")
         return model
-
+        
     except Exception as e:
-        st.error("AI model not available: error while loading 'my_model.pkl'.")
-        st.write("Model load error (debug):", repr(e))
+        st.error(f"Error loading model: {str(e)}")
         return None
-
 # === PAGE CONFIG ===
 st.set_page_config(
     page_title="AHECN Hospital Command Center",
@@ -669,6 +661,9 @@ def render_case_details(case, case_type):
 
     # Load model (this will show explicit errors if something is wrong)
     model = load_triage_model()
+    
+    # Debug information
+    st.write("Model object:", model)
 
     vitals = case["vitals"]
     age = case["patient_age"]
