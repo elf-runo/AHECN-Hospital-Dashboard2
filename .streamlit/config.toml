@@ -2,14 +2,19 @@
 headless = true
 address = "0.0.0.0"
 port = 8501
+enableCORS = false
+enableXsrfProtection = false
 
 [browser]
 serverAddress = "localhost"
 gatherUsageStats = false
 
 [theme]
-primaryColor = "#1f77b4"
+primaryColor = "#1a237e"
 backgroundColor = "#ffffff"
-secondaryBackgroundColor = "#f0f2f6"
-textColor = "#262730"
+secondaryBackgroundColor = "#f8f9fa"
+textColor = "#0d1b2a"
 font = "sans serif"
+
+[runner]
+magicEnabled = false
