@@ -10,12 +10,52 @@ import random
 import math
 import os
 import csv
-
+from pathlib import Path
 # joblib is optional – used only if available
 try:
     import joblib   # for loading the ML model
 except ImportError:
     joblib = None
+    
+# === AI TRIAGE MODEL LOADING ===
+@st.cache_resource
+def load_triage_model():
+    """
+    Load the trained triage model from my_model.pkl.
+
+    Looks for the file in the same folder as hospital_dashboard_app.py.
+    If anything goes wrong, returns None and shows a warning in the UI.
+    """
+    # If joblib isn't available, we can't load the model
+    if joblib is None:
+        st.warning(
+            "AI model not available. joblib is not installed in this environment."
+        )
+        return None
+
+    try:
+        # Resolve path relative to this file
+        app_dir = Path(__file__).resolve().parent
+        model_path = app_dir / "my_model.pkl"
+
+        if not model_path.exists():
+            st.warning(
+                "AI model not available. Could not find 'my_model.pkl' in the app folder."
+            )
+            st.write("Checked path:", str(model_path))
+            return None
+
+        model = joblib.load(model_path)
+        return model
+
+    except Exception as e:
+        st.warning(
+            "AI model not available. Please ensure 'my_model.pkl' is present, "
+            "compatible, and that joblib is installed."
+        )
+        # Show the underlying error in the app so we can debug if needed
+        st.write("Model load error:", e)
+        return None
 
 # === PAGE CONFIG ===
 st.set_page_config(
@@ -601,34 +641,33 @@ def render_case_details(case, case_type):
         st.write(f"**RR:** {vitals['rr']} rpm | **SpO₂:** {vitals['spo2']}%")
         st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
 
-        # === AI-DRIVEN CLINICAL RECOMMENDATION ===
-        st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
+         # === AI-Driven Clinical Recommendation ===
+         st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
-        if AI_MODEL is None:
-            st.warning("AI model not available. Please ensure 'my_model.pkl' is present, compatible, and that joblib is installed.")
-        else:
-            # Features: [age, sbp, spo2, hr]
-            features = [
-                float(case['patient_age']),
-                float(vitals['sbp']),
-                float(vitals['spo2']),
-                float(vitals['hr'])
-            ]
+         model = load_triage_model()
+         vitals = case["vitals"]
 
-            ai_state_key = f"ai_state_{case['case_id']}"
-            if ai_state_key not in st.session_state:
-                st.session_state[ai_state_key] = {"prediction": None, "features": None}
+         if model is None:
+             # Message if we couldn't load the model
+             st.info(
+                 "AI model not available. Please ensure 'my_model.pkl' is present, "
+                 "compatible, and that joblib is installed."
+     )
+         else:
+             # Features must match how the model was trained (age, SBP, SpO2, HR)
+             X = np.array([[case["patient_age"], vitals["sbp"], vitals["spo2"], vitals["hr"]]])
 
-            if st.button("Get AI Recommendation", key=f"ai_btn_{case['case_id']}"):
-                try:
-                    inp = np.array([features])
-                    pred = AI_MODEL.predict(inp)
-                    pred_str = str(pred[0])
-                    st.session_state[ai_state_key]["prediction"] = pred_str
-                    st.session_state[ai_state_key]["features"] = features
-                    st.success(f"AI Recommendation: {pred_str}")
-                except Exception as e:
-                    st.error(f"AI prediction failed: {e}")
+             # Unique key so buttons don't clash across cases
+             ai_button_key = get_unique_key("ai_button", case_type, case)
+
+             if st.button("Get AI Recommendation", key=ai_button_key):
+                 try:
+                     pred = model.predict(X)
+                     st.success(f"AI Recommendation: {pred[0]}")
+                 except Exception as e:
+                     st.error("Error while running the AI model.")
+                     st.write("Prediction error:", e)
+
 
             # If we have an existing prediction, show it and allow feedback
             current_pred = st.session_state[ai_state_key]["prediction"]
