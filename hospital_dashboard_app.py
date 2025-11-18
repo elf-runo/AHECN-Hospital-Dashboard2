@@ -144,28 +144,28 @@ EMT_CREW = [
 # === ENHANCED DATA GENERATION ===
 def generate_premium_synthetic_data(days_back=30):
     """Generate comprehensive synthetic data with realistic timelines"""
-    
+
     facilities = [
         {"name": "Tertiary Central Hospital", "type": "Tertiary", "lat": 25.578, "lon": 91.893, "beds": 500},
         {"name": "District North General", "type": "District", "lat": 25.591, "lon": 91.878, "beds": 200},
         {"name": "Specialty South Medical", "type": "Specialty", "lat": 25.565, "lon": 91.901, "beds": 150},
         {"name": "Trauma East Center", "type": "Trauma", "lat": 25.572, "lon": 91.885, "beds": 300},
     ]
-    
+
     case_types = ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"]
-    
+
     referred_cases = []
     received_cases = []
-    
+
     base_time = datetime.now() - timedelta(days=days_back)
-    
+
     for day in range(days_back):
         daily_cases = random.randint(3, 8)
         for case_num in range(daily_cases):
             case_time = base_time + timedelta(days=day, hours=random.randint(0, 23), minutes=random.randint(0, 59))
             case_type = random.choice(case_types)
             age = random.randint(18, 80) if case_type != "Maternal" else random.randint(18, 40)
-            
+
             # Generate realistic vitals
             if case_type == "Maternal":
                 vitals = {
@@ -185,26 +185,27 @@ def generate_premium_synthetic_data(days_back=30):
                     "rr": random.randint(18, 32), "temp": round(random.uniform(36.5, 39.0), 1),
                     "spo2": random.randint(86, 95), "avpu": random.choices(["A", "V"], weights=[0.8, 0.2])[0]
                 }
-            
+
             # Select ICD code
             matching_icd = [icd for icd in ICD_CATALOG if icd["case_type"] == case_type and icd["age_min"] <= age <= icd["age_max"]]
             icd = random.choice(matching_icd) if matching_icd else random.choice([icd for icd in ICD_CATALOG if icd["case_type"] == case_type])
-            
+
             # Generate interventions
             interventions = random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(2, 4))
-            
+
             # Select facilities
             referring_facility = random.choice(["PHC Mawlai", "CHC Smit", "CHC Pynursla", "Rural Health Center"])
             receiving_facility = random.choice(facilities)
             emt_crew = random.choice(EMT_CREW)
-            
+
             # Calculate transport details
             transport_time = random.randint(20, 90)
-            
-            case_id = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
-            
+
+            case_id_ref = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
+            case_id_rec = f"REC_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
+
             referred_case = {
-                "case_id": case_id,
+                "case_id": case_id_ref,
                 "timestamp": case_time,
                 "referring_facility": referring_facility,
                 "receiving_facility": receiving_facility["name"],
@@ -219,10 +220,10 @@ def generate_premium_synthetic_data(days_back=30):
                 "status": random.choices(["Accepted", "Rejected", "Pending"], weights=[0.8, 0.1, 0.1])[0],
                 "clinical_notes": f"Patient presented with {case_type.lower()} symptoms requiring specialist care"
             }
-            
+
             received_case = {
                 **referred_case,
-                "case_id": case_id.replace("REF", "REC"),
+                "case_id": case_id_rec,
                 "transport_time_minutes": transport_time,
                 "emt_crew": emt_crew,
                 "vehicle_id": emt_crew["vehicle"],
@@ -231,10 +232,10 @@ def generate_premium_synthetic_data(days_back=30):
                 "length_of_stay_hours": random.randint(24, 240),
                 "discharge_date": case_time + timedelta(hours=random.randint(24, 240))
             }
-            
+
             referred_cases.append(referred_case)
             received_cases.append(received_case)
-    
+
     return {
         "referred_cases": pd.DataFrame(referred_cases),
         "received_cases": pd.DataFrame(received_cases),
@@ -244,32 +245,25 @@ def generate_premium_synthetic_data(days_back=30):
 
 # === SESSION STATE MANAGEMENT ===
 def initialize_session_state():
-    """Initialize all session state variables with unique keys"""
+    """Initialize all session state variables"""
     if 'premium_data' not in st.session_state:
         st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
-    
+
     if 'current_tab' not in st.session_state:
         st.session_state.current_tab = "Dashboard"
-    
+
     if 'selected_case' not in st.session_state:
         st.session_state.selected_case = None
-    
+
     if 'search_terms' not in st.session_state:
         st.session_state.search_terms = {}
-    
+
     if 'date_filters' not in st.session_state:
         st.session_state.date_filters = {
             "start_date": datetime.now().date() - timedelta(days=7),
             "end_date": datetime.now().date()
         }
 
-# === UNIQUE KEY GENERATOR ===
-def get_unique_key(component_type, case_type, case_data, extra_suffix=""):
-    """Generate truly unique keys for Streamlit components"""
-    case_id = case_data.get('case_id', 'unknown')
-    timestamp = case_data.get('timestamp', '').strftime('%Y%m%d%H%M%S') if hasattr(case_data.get('timestamp'), 'strftime') else 'notime'
-    return f"{component_type}_{case_type}_{case_id}_{timestamp}_{extra_suffix}"
-    
 # === PREMIUM DASHBOARD COMPONENTS ===
 def render_premium_header():
     """Render premium header with key metrics"""
@@ -279,16 +273,16 @@ def render_premium_header():
         <p style="margin:0; font-size:1.2rem; opacity:0.9;">Advanced Emergency Care Coordination Platform</p>
     </div>
     """, unsafe_allow_html=True)
-    
+
     # Key metrics row
     col1, col2, col3, col4, col5 = st.columns(5)
-    
+
     data = st.session_state.premium_data
     total_cases = len(data["referred_cases"])
     critical_cases = len(data["referred_cases"][data["referred_cases"]["triage_color"] == "RED"])
     urgent_cases = len(data["referred_cases"][data["referred_cases"]["triage_color"] == "YELLOW"])
-    acceptance_rate = (len(data["referred_cases"][data["referred_cases"]["status"] == "Accepted"]) / total_cases) * 100
-    
+    acceptance_rate = (len(data["referred_cases"][data["referred_cases"]["status"] == "Accepted"]) / total_cases * 100) if total_cases else 0
+
     with col1:
         st.markdown(f"""
         <div class="metric-highlight">
@@ -296,7 +290,7 @@ def render_premium_header():
             <div>Total Cases</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col2:
         st.markdown(f"""
         <div class="metric-highlight">
@@ -304,7 +298,7 @@ def render_premium_header():
             <div>Critical RED</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col3:
         st.markdown(f"""
         <div class="metric-highlight">
@@ -312,7 +306,7 @@ def render_premium_header():
             <div>Urgent YELLOW</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col4:
         st.markdown(f"""
         <div class="metric-highlight">
@@ -320,7 +314,7 @@ def render_premium_header():
             <div>Acceptance Rate</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col5:
         avg_transport = data["received_cases"]["transport_time_minutes"].mean()
         st.markdown(f"""
@@ -333,11 +327,11 @@ def render_premium_header():
 def render_case_calendar():
     """Interactive calendar for case management"""
     st.markdown("### 📅 Case Calendar & Timeline")
-    
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
-        # Date range selector with unique key
+        # Date range selector
         date_range = st.date_input(
             "Select Date Range",
             value=(
@@ -346,92 +340,100 @@ def render_case_calendar():
             ),
             key="global_date_range_selector"
         )
-        
-        if len(date_range) == 2:
+
+        if isinstance(date_range, tuple) and len(date_range) == 2:
             st.session_state.date_filters["start_date"] = date_range[0]
             st.session_state.date_filters["end_date"] = date_range[1]
-        
-        # Filter cases by date range
-        filtered_referred = st.session_state.premium_data["referred_cases"][
-            (st.session_state.premium_data["referred_cases"]["timestamp"].dt.date >= st.session_state.date_filters["start_date"]) &
-            (st.session_state.premium_data["referred_cases"]["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
-        ]
-        
+
+        referred_df = st.session_state.premium_data["referred_cases"]
+        mask = (
+            (referred_df["timestamp"].dt.date >= st.session_state.date_filters["start_date"]) &
+            (referred_df["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
+        )
+        filtered_referred = referred_df[mask]
+
         # Case timeline visualization
         if not filtered_referred.empty:
-            timeline_data = filtered_referred.groupby(filtered_referred["timestamp"].dt.date).size().reset_index(name='count')
-            fig = px.line(timeline_data, x='timestamp', y='count', 
-                         title="Daily Case Volume Trend",
-                         markers=True)
+            timeline_data = filtered_referred.copy()
+            timeline_data["date"] = timeline_data["timestamp"].dt.date
+            timeline_data = timeline_data.groupby("date").size().reset_index(name="count")
+            fig = px.line(
+                timeline_data,
+                x="date",
+                y="count",
+                title="Daily Case Volume Trend",
+                markers=True
+            )
             fig.update_layout(height=300)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No cases found in selected date range")
-    
+
     with col2:
         st.markdown("#### Quick Filters")
-        
-        # Case type filter with unique key
-        selected_case_types = st.multiselect(
+
+        st.multiselect(
             "Case Types",
             options=["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"],
             default=["Maternal", "Trauma", "Cardiac"],
             key="case_type_filter"
         )
-        
-        # Triage filter with unique key
-        selected_triage = st.multiselect(
+
+        st.multiselect(
             "Triage Levels",
             options=["RED", "YELLOW", "GREEN"],
             default=["RED", "YELLOW"],
             key="triage_filter"
         )
-        
-        # Facility filter with unique key
+
         facilities = ["Tertiary Central Hospital", "District North General", "Specialty South Medical", "Trauma East Center"]
-        selected_facilities = st.multiselect(
+        st.multiselect(
             "Receiving Facilities",
             options=facilities,
             default=facilities,
             key="facility_filter"
         )
-        
+
         if st.button("Apply Filters", key="apply_filters_btn"):
             st.success(f"Filters applied to {len(filtered_referred)} cases")
 
 def render_interactive_case_list(case_type="referred"):
-    """Interactive case list with detailed views - FIXED DUPLICATE KEYS"""
-    
-    # Create unique key prefix for this case list
+    """Interactive case list with detailed views"""
     key_prefix = f"{case_type}_cases"
-    
+
     st.markdown(f"### 📋 {'Referred' if case_type == 'referred' else 'Received'} Cases")
-    
+
     cases_df = st.session_state.premium_data[f"{case_type}_cases"]
-    
+
     # Apply date filter
-    filtered_cases = cases_df[
+    mask = (
         (cases_df["timestamp"].dt.date >= st.session_state.date_filters["start_date"]) &
         (cases_df["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
-    ]
-    
-    # Search and filter with unique keys
+    )
+    filtered_cases = cases_df[mask]
+
+    # Search and filter
     col1, col2, col3 = st.columns([2, 1, 1])
-    
+
     with col1:
         search_term = st.text_input(
-            "🔍 Search cases...", 
+            "🔍 Search cases...",
             placeholder="Search by case ID, facility, or diagnosis",
             key=f"{key_prefix}_search"
         )
-    
+
     with col2:
         sort_options = ["Timestamp (Newest)", "Timestamp (Oldest)", "Triage", "Case Type"]
         sort_by = st.selectbox("Sort by", sort_options, key=f"{key_prefix}_sort")
-    
+
     with col3:
-        items_per_page = st.selectbox("Items per page", [10, 25, 50], index=0, key=f"{key_prefix}_pagination")
-    
+        items_per_page = st.selectbox(
+            "Items per page",
+            [10, 25, 50],
+            index=0,
+            key=f"{key_prefix}_pagination"
+        )
+
     # Filter cases based on search
     if search_term:
         filtered_cases = filtered_cases[
@@ -440,49 +442,51 @@ def render_interactive_case_list(case_type="referred"):
             filtered_cases["icd_label"].str.contains(search_term, case=False) |
             filtered_cases["receiving_facility"].str.contains(search_term, case=False)
         ]
-    
+
     # Sort cases
     if sort_by == "Timestamp (Newest)":
         filtered_cases = filtered_cases.sort_values("timestamp", ascending=False)
     elif sort_by == "Timestamp (Oldest)":
         filtered_cases = filtered_cases.sort_values("timestamp", ascending=True)
     elif sort_by == "Triage":
-        # Custom sort order for triage
         triage_order = {"RED": 1, "YELLOW": 2, "GREEN": 3}
-        filtered_cases = filtered_cases.sort_values("triage_color", key=lambda x: x.map(triage_order))
+        filtered_cases = filtered_cases.sort_values(
+            "triage_color",
+            key=lambda x: x.map(triage_order)
+        )
     else:
         filtered_cases = filtered_cases.sort_values("case_type", ascending=True)
-    
+
     # Pagination
     if not filtered_cases.empty:
-        total_pages = max(1, len(filtered_cases) // items_per_page + (1 if len(filtered_cases) % items_per_page else 0))
+        total_pages = int(len(filtered_cases) / items_per_page) + (1 if len(filtered_cases) % items_per_page else 0)
+        total_pages = max(total_pages, 1)
         page_number = st.number_input(
-            "Page", 
-            min_value=1, 
-            max_value=total_pages, 
-            value=1, 
+            "Page",
+            min_value=1,
+            max_value=total_pages,
+            value=1,
             key=f"{key_prefix}_page"
         )
-        
+
         start_idx = (page_number - 1) * items_per_page
         end_idx = start_idx + items_per_page
         paginated_cases = filtered_cases.iloc[start_idx:end_idx]
-        
+
         st.write(f"Showing {len(paginated_cases)} of {len(filtered_cases)} cases")
-        
-        # Display cases - FIX: Use enumerate to get unique display index
-        for display_idx, (idx, case) in enumerate(paginated_cases.iterrows()):
-            render_case_card(case, case_type, display_idx, page_number)
+
+        # Display cases
+        for display_idx, (_, case) in enumerate(paginated_cases.iterrows()):
+            render_case_card(case, case_type, display_idx)
     else:
         st.info("No cases found matching the current filters")
-        
-def render_case_card(case, case_type, display_idx, page_number):
-    """Render individual case card with unique keys"""
-    case_class = f"case-card {case['triage_color'].lower()}"
-    
-    # Create a truly unique key using case_id, page number, and display index
-    unique_key = f"case_details_{case_type}_{case['case_id']}_p{page_number}_i{display_idx}"
-    
+
+def render_case_card(case, case_type, index):
+    """Render individual case card"""
+    triage_map = {"RED": "critical", "YELLOW": "urgent", "GREEN": "stable"}
+    triage_class = triage_map.get(case["triage_color"], "")
+    case_class = f"case-card {triage_class}"
+
     with st.container():
         st.markdown(f"""
         <div class="{case_class}">
@@ -490,27 +494,27 @@ def render_case_card(case, case_type, display_idx, page_number):
                 <div>
                     <strong>{case['case_id']}</strong> • {case['icd_label']}
                 </div>
-                <div style="background: {'#ff4444' if case['triage_color'] == 'RED' else '#ffaa00' if case['triage_color'] == 'YELLOW' else '#00c853'}; 
+                <div style="background: {'#ff4444' if case['triage_color'] == 'RED' else '#ffaa00' if case['triage_color'] == 'YELLOW' else '#00c853'};
                             color: white; padding: 0.2rem 0.8rem; border-radius: 15px; font-size: 0.8rem;">
                     {case['triage_color']}
                 </div>
             </div>
             <div style="color: #666; font-size: 0.9rem; margin-top: 0.5rem;">
-                {case['referring_facility']} → {case['receiving_facility']} • 
-                {case['timestamp'].strftime('%Y-%m-%d %H:%M')} • 
+                {case['referring_facility']} → {case['receiving_facility']} •
+                {case['timestamp'].strftime('%Y-%m-%d %H:%M')} •
                 {case['patient_age']}{case['patient_sex']}
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # Case details expander with UNIQUE key
-        with st.expander(f"View full details for {case['case_id']}", key=unique_key):
+
+        # Let Streamlit manage the expander key (no explicit key here)
+        with st.expander(f"View full details for {case['case_id']}"):
             render_case_details(case, case_type)
-            
+
 def render_case_details(case, case_type):
     """Render detailed case information"""
     col1, col2 = st.columns([1, 1])
-    
+
     with col1:
         st.markdown("#### Patient Information")
         st.write(f"**Case ID:** {case['case_id']}")
@@ -519,26 +523,26 @@ def render_case_details(case, case_type):
         st.write(f"**Triage:** {case['triage_color']}")
         st.write(f"**Referring Facility:** {case['referring_facility']}")
         st.write(f"**Receiving Facility:** {case['receiving_facility']}")
-        
+
         st.markdown("#### Vital Signs")
         vitals = case['vitals']
         st.write(f"**HR:** {vitals['hr']} bpm | **SBP:** {vitals['sbp']} mmHg")
-        st.write(f"**RR:** {vitals['rr']} rpm | **SpO2:** {vitals['spo2']}%")
+        st.write(f"**RR:** {vitals['rr']} rpm | **SpO₂:** {vitals['spo2']}%")
         st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
-    
+
     with col2:
         st.markdown("#### Timeline & Interventions")
-        
+
         # Interventions timeline
         st.markdown("**Referring Interventions:**")
         for intervention in case['interventions_referring']:
-            st.markdown(f'<div class="intervention-badge">{intervention}</div>', unsafe_allow_html=True)
-        
+            st.markdown(f'<span class="intervention-badge">{intervention}</span>', unsafe_allow_html=True)
+
         if case_type == "received":
             st.markdown("**Receiving Interventions:**")
             for intervention in case['interventions_receiving']:
-                st.markdown(f'<div class="intervention-badge">{intervention}</div>', unsafe_allow_html=True)
-            
+                st.markdown(f'<span class="intervention-badge">{intervention}</span>', unsafe_allow_html=True)
+
             st.markdown("#### Transport Details")
             st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
             st.write(f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})")
@@ -549,79 +553,93 @@ def render_case_details(case, case_type):
 def render_advanced_analytics():
     """Premium analytics dashboard"""
     st.markdown("### 📊 Advanced Analytics Dashboard")
-    
+
     data = st.session_state.premium_data
     filtered_cases = data["referred_cases"][
         (data["referred_cases"]["timestamp"].dt.date >= st.session_state.date_filters["start_date"]) &
         (data["referred_cases"]["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
     ]
-    
+
     # Overview metrics
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         total_cases = len(filtered_cases)
         st.metric("Total Cases", total_cases)
-    
+
     with col2:
         acceptance_rate = (len(filtered_cases[filtered_cases["status"] == "Accepted"]) / total_cases * 100) if total_cases > 0 else 0
         st.metric("Acceptance Rate", f"{acceptance_rate:.1f}%")
-    
+
     with col3:
         avg_transport = data["received_cases"]["transport_time_minutes"].mean()
         st.metric("Avg Transport Time", f"{avg_transport:.1f} min")
-    
+
     with col4:
         critical_cases = len(filtered_cases[filtered_cases["triage_color"] == "RED"])
         st.metric("Critical Cases", critical_cases)
-    
+
     if not filtered_cases.empty:
         # Advanced charts
         col1, col2 = st.columns(2)
-        
+
         with col1:
             # Case type distribution
             st.markdown("#### Case Type Analysis")
             case_counts = filtered_cases["case_type"].value_counts()
             fig = px.pie(values=case_counts.values, names=case_counts.index, title="Cases by Type")
             st.plotly_chart(fig, use_container_width=True)
-        
+
         with col2:
             # Triage distribution
             st.markdown("#### Triage Distribution")
             triage_counts = filtered_cases["triage_color"].value_counts()
-            fig = px.bar(x=triage_counts.index, y=triage_counts.values, 
-                        color=triage_counts.index,
-                        color_discrete_map={'RED': '#ff4444', 'YELLOW': '#ffaa00', 'GREEN': '#00c853'},
-                        title="Cases by Triage Level")
+            fig = px.bar(
+                x=triage_counts.index,
+                y=triage_counts.values,
+                color=triage_counts.index,
+                color_discrete_map={'RED': '#ff4444', 'YELLOW': '#ffaa00', 'GREEN': '#00c853'},
+                title="Cases by Triage Level"
+            )
             st.plotly_chart(fig, use_container_width=True)
-        
+
         # Performance metrics
         st.markdown("#### Performance Trends")
         col1, col2, col3 = st.columns(3)
-        
+
         with col1:
             # Daily trends
             daily_data = filtered_cases.copy()
             daily_data['date'] = daily_data['timestamp'].dt.date
             daily_trends = daily_data.groupby('date').size()
-            fig = px.line(x=daily_trends.index, y=daily_trends.values, 
-                         title="Daily Case Volume", labels={'x': 'Date', 'y': 'Cases'})
+            fig = px.line(
+                x=daily_trends.index,
+                y=daily_trends.values,
+                title="Daily Case Volume",
+                labels={'x': 'Date', 'y': 'Cases'}
+            )
             st.plotly_chart(fig, use_container_width=True)
-        
+
         with col2:
             # Facility performance
             facility_performance = filtered_cases["receiving_facility"].value_counts()
-            fig = px.pie(values=facility_performance.values, names=facility_performance.index, 
-                        title="Case Distribution by Facility")
+            fig = px.pie(
+                values=facility_performance.values,
+                names=facility_performance.index,
+                title="Case Distribution by Facility"
+            )
             st.plotly_chart(fig, use_container_width=True)
-        
+
         with col3:
             # Outcome analysis (for received cases)
             if not data["received_cases"].empty:
                 outcome_dist = data["received_cases"]["final_outcome"].value_counts()
-                fig = px.bar(x=outcome_dist.values, y=outcome_dist.index, orientation='h',
-                            title="Patient Outcomes Distribution")
+                fig = px.bar(
+                    x=outcome_dist.values,
+                    y=outcome_dist.index,
+                    orientation='h',
+                    title="Patient Outcomes Distribution"
+                )
                 st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("No data available for analytics with current filters")
@@ -629,17 +647,17 @@ def render_advanced_analytics():
 def render_emt_tracking():
     """Real-time EMT and ambulance tracking"""
     st.markdown("### 🚑 Real-time EMT Tracking")
-    
+
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         # Active transports
         st.markdown("#### Active Transports")
         active_transports = st.session_state.premium_data["received_cases"].tail(3)  # Simulate active transports
-        
-        for idx, transport in active_transports.iterrows():
+
+        for _, transport in active_transports.iterrows():
             progress = random.randint(30, 90)
-            
+
             st.markdown(f"""
             <div class="premium-card">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -661,7 +679,7 @@ def render_emt_tracking():
                 </div>
             </div>
             """, unsafe_allow_html=True)
-    
+
     with col2:
         # EMT crew status
         st.markdown("#### Crew Status")
@@ -675,180 +693,183 @@ def render_emt_tracking():
 def render_quick_actions():
     """Quick action buttons for common tasks"""
     st.markdown("### ⚡ Quick Actions")
-    
+
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         if st.button("🔄 Refresh All Data", use_container_width=True, key="refresh_data_btn_main"):
             st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
             st.success("Data refreshed successfully!")
-        
+
         if st.button("📊 Generate Report", use_container_width=True, key="generate_report_btn_main"):
             st.info("Generating comprehensive report...")
-    
+
     with col2:
         if st.button("🚨 Emergency Mode", use_container_width=True, type="secondary", key="emergency_mode_btn_main"):
             st.warning("Emergency mode activated - prioritizing critical cases")
-        
+
         if st.button("📋 Case Summary", use_container_width=True, key="case_summary_btn_main"):
             st.info("Displaying case summary...")
-    
+
     with col3:
         if st.button("📧 Notify Staff", use_container_width=True, key="notify_staff_btn_main"):
             st.success("Staff notification sent!")
-        
+
         if st.button("🖨️ Export Data", use_container_width=True, key="export_data_btn_main"):
             st.info("Preparing data export...")
-    
+
     # Quick referral form
     st.markdown("### 🏃 Quick Referral")
     with st.form("quick_referral_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
-        
+
         with col1:
             patient_name = st.text_input("Patient Name", key="quick_ref_name")
             age = st.number_input("Age", 1, 120, 35, key="quick_ref_age")
             chief_complaint = st.selectbox("Chief Complaint", ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"], key="quick_ref_complaint")
-        
+
         with col2:
             hr = st.number_input("Heart Rate", 20, 240, 80, key="quick_ref_hr")
             sbp = st.number_input("SBP", 50, 260, 120, key="quick_ref_sbp")
             spo2 = st.number_input("SpO₂", 50, 100, 98, key="quick_ref_spo2")
-        
+
         clinical_notes = st.text_area("Clinical Notes", key="quick_ref_notes")
-        
+
         if st.form_submit_button("🚀 Create Emergency Referral", type="primary"):
             st.success(f"Emergency referral created for {patient_name}!")
 
 def render_dashboard_overview():
     """Main dashboard overview"""
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         # Case calendar and timeline
         render_case_calendar()
-        
+
         # Recent activity
         st.markdown("### 📈 Recent Activity")
         recent_cases = st.session_state.premium_data["referred_cases"].tail(10)
-        
-        for idx, case in recent_cases.iterrows():
+
+        for _, case in recent_cases.iterrows():
             st.markdown(f"""
             <div class="timeline-event">
                 <strong>{case['case_id']}</strong> - {case['icd_label']}<br>
                 <small>{case['timestamp'].strftime('%Y-%m-%d %H:%M')} • {case['triage_color']} • {case['referring_facility']}</small>
             </div>
             """, unsafe_allow_html=True)
-    
+
     with col2:
         # System status
         st.markdown("### 🖥️ System Status")
-        
+
         status_items = [
             {"name": "Database", "status": "Optimal", "color": "success"},
             {"name": "API Services", "status": "Stable", "color": "success"},
             {"name": "EMT Tracking", "status": "Active", "color": "success"},
             {"name": "Analytics", "status": "Processing", "color": "warning"},
         ]
-        
-        for idx, item in enumerate(status_items):
+
+        for item in status_items:
             st.markdown(f"""
             <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0;">
                 <span>{item['name']}</span>
-                <span style="background: {'#00c853' if item['color'] == 'success' else '#ffab00'}; 
+                <span style="background: {'#00c853' if item['color'] == 'success' else '#ffab00'};
                             color: white; padding: 0.2rem 0.8rem; border-radius: 15px; font-size: 0.8rem;">
                     {item['status']}
                 </span>
             </div>
             """, unsafe_allow_html=True)
-        
+
         # Quick stats
         st.markdown("### 📋 Quick Stats")
         stats = st.session_state.premium_data["referred_cases"]
         today = datetime.now().date()
-        
+
         cases_today = len(stats[stats["timestamp"].dt.date == today])
         st.metric("Cases Today", cases_today)
-        
+
         this_week = stats[stats["timestamp"].dt.isocalendar().week == datetime.now().isocalendar()[1]]
         st.metric("Cases This Week", len(this_week))
-        
+
         critical_pending = len(stats[(stats["triage_color"] == "RED") & (stats["status"] == "Pending")])
         st.metric("Critical Pending", critical_pending)
 
 def render_premium_sidebar():
     """Premium sidebar with additional features"""
     st.sidebar.markdown("### 🔔 Live Alerts")
-    
+
     # Critical alerts
     critical_cases = st.session_state.premium_data["referred_cases"][
         st.session_state.premium_data["referred_cases"]["triage_color"] == "RED"
     ].tail(3)
-    
-    for idx, case in critical_cases.iterrows():
+
+    for _, case in critical_cases.iterrows():
         st.sidebar.error(f"""
         **{case['case_id']}**
         {case['icd_label']}
         *{case['timestamp'].strftime('%H:%M')} • {case['referring_facility']}*
         """)
-    
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📈 Performance")
-    
+
     # Performance metrics
-    metrics = st.session_state.premium_data["referred_cases"]
-    acceptance_rate = (len(metrics[metrics["status"] == "Accepted"]) / len(metrics)) * 100
-    
+    metrics_df = st.session_state.premium_data["referred_cases"]
+    acceptance_rate = (len(metrics_df[metrics_df["status"] == "Accepted"]) / len(metrics_df) * 100) if len(metrics_df) else 0
+
     st.sidebar.metric("Response Rate", f"{acceptance_rate:.1f}%", "2%")
     st.sidebar.metric("Avg Decision Time", "8.2min", "-1.3min")
     st.sidebar.metric("System Uptime", "99.9%", "0%")
-    
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🛠️ Tools")
-    
+
     if st.sidebar.button("🔄 Force Refresh", key="sidebar_refresh"):
         st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
         st.rerun()
-    
+
     if st.sidebar.button("📋 Data Summary", key="sidebar_summary"):
         total_cases = len(st.session_state.premium_data["referred_cases"])
         st.sidebar.info(f"Total Cases: {total_cases}")
 
 # === MAIN PREMIUM DASHBOARD ===
 def main():
-    # Initialize session state with unique keys
+    # Initialize session state
     initialize_session_state()
-    
+
     # Render premium header
     render_premium_header()
-    
+
     # Main navigation tabs
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "🏠 Dashboard", 
-        "📤 Referred Cases", 
-        "🏥 Received Cases", 
-        "📊 Analytics", 
+        "🏠 Dashboard",
+        "📤 Referred Cases",
+        "🏥 Received Cases",
+        "📊 Analytics",
         "🚑 EMT Tracking",
         "⚡ Quick Actions"
     ])
-    
+
     with tab1:
         render_dashboard_overview()
-    
+
     with tab2:
         render_interactive_case_list("referred")
-    
+
     with tab3:
         render_interactive_case_list("received")
-    
+
     with tab4:
         render_advanced_analytics()
-    
+
     with tab5:
         render_emt_tracking()
-    
+
     with tab6:
         render_quick_actions()
-    
+
     # Sidebar
     render_premium_sidebar()
+
+if __name__ == "__main__":
+    main()
