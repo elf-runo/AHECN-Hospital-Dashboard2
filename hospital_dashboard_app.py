@@ -1144,7 +1144,6 @@ def render_diagnostic_panel():
     except:
         st.sidebar.write("💾 Memory: psutil not available")
 
-# === MAIN PREMIUM DASHBOARD ===
 def main():
     # Initialize session state
     initialize_session_state()
