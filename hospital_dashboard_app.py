@@ -55,35 +55,31 @@ def create_demo_model():
 @st.cache_resource
 def load_triage_model():
     """
-    Minimal model loader that always works
+    Model loader that handles version changes
     """
     try:
-        # Check if joblib is available
         if joblib is None:
             return None
             
-        # Try to load existing demo model
-        if os.path.exists("demo_model.pkl"):
-            return joblib.load("demo_model.pkl")
-        
-        # If no model exists, create a simple one
-        st.sidebar.info("🔄 Initializing AI engine...")
-        
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.datasets import make_classification
-        
-        # Create minimal model
-        X, y = make_classification(n_samples=100, n_features=4, random_state=42)
-        model = RandomForestClassifier(n_estimators=10, random_state=42)
-        model.fit(X, y)
-        
-        # Save for future use
-        joblib.dump(model, "demo_model.pkl")
-        st.sidebar.success("✅ AI engine ready!")
-        return model
-        
+        # Try to load model with error handling
+        if os.path.exists("my_model.pkl"):
+            model = joblib.load("my_model.pkl")
+            return model
+        else:
+            # Create a simple demo model
+            from sklearn.ensemble import RandomForestClassifier
+            from sklearn.datasets import make_classification
+            
+            X, y = make_classification(n_samples=100, n_features=4, random_state=42)
+            model = RandomForestClassifier(n_estimators=10, random_state=42)
+            model.fit(X, y)
+            
+            # Optional: save for future
+            joblib.dump(model, "demo_model.pkl")
+            return model
+            
     except Exception as e:
-        st.sidebar.error(f"AI setup failed: {e}")
+        st.sidebar.error(f"Model loading issue: {e}")
         return None
 
 def get_triage_model():
