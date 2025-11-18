@@ -1,4 +1,4 @@
-# hospital_dashboard_premium_fixed.py
+# hospital_dashboard_app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 import time
 import random
 import math
+import os
+import csv
+import joblib   # for loading the ML model
 
 # === PAGE CONFIG ===
 st.set_page_config(
@@ -141,6 +144,62 @@ EMT_CREW = [
     {"id": "EMT_004", "name": "Lisa Park", "level": "Critical Care", "vehicle": "Mobile ICU", "status": "available"},
 ]
 
+# === AI MODEL LOADING (WITH CACHE) ===
+@st.cache_resource
+def load_triage_model():
+    """
+    Load the pre-trained model.
+    Returns None if model file not found or loading fails,
+    so the dashboard still works without the AI layer.
+    """
+    model_path = "my_model.pkl"
+    if not os.path.exists(model_path):
+        return None
+    try:
+        model = joblib.load(model_path)
+        return model
+    except Exception:
+        return None
+
+AI_MODEL = load_triage_model()
+
+# === FEEDBACK LOGGING ===
+FEEDBACK_LOG_PATH = "ai_feedback_log.csv"
+FEEDBACK_FIELDS = [
+    "timestamp_utc",
+    "case_id",
+    "patient_age",
+    "sbp",
+    "spo2",
+    "hr",
+    "ai_suggestion",
+    "feedback"
+]
+
+def log_ai_feedback(case, features, ai_suggestion, feedback):
+    """
+    Append feedback to CSV log for future analysis / model improvement.
+    `features` is expected as a 1D list [age, sbp, spo2, hr].
+    """
+    if not isinstance(features, (list, tuple)) or len(features) < 4:
+        return
+
+    file_exists = os.path.exists(FEEDBACK_LOG_PATH)
+    with open(FEEDBACK_LOG_PATH, mode="a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=FEEDBACK_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow({
+            "timestamp_utc": datetime.utcnow().isoformat(),
+            "case_id": case["case_id"],
+            "patient_age": features[0],
+            "sbp": features[1],
+            "spo2": features[2],
+            "hr": features[3],
+            "ai_suggestion": ai_suggestion,
+            "feedback": feedback
+        })
+
 # === ENHANCED DATA GENERATION ===
 def generate_premium_synthetic_data(days_back=30):
     """Generate comprehensive synthetic data with realistic timelines"""
@@ -198,7 +257,7 @@ def generate_premium_synthetic_data(days_back=30):
             receiving_facility = random.choice(facilities)
             emt_crew = random.choice(EMT_CREW)
 
-            # Calculate transport details
+            # Transport details
             transport_time = random.randint(20, 90)
 
             case_id_ref = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
@@ -507,13 +566,15 @@ def render_case_card(case, case_type, index):
         </div>
         """, unsafe_allow_html=True)
 
-        # Let Streamlit manage the expander key (no explicit key here)
+        # Let Streamlit manage the expander key
         with st.expander(f"View full details for {case['case_id']}"):
             render_case_details(case, case_type)
 
 def render_case_details(case, case_type):
-    """Render detailed case information"""
+    """Render detailed case information + AI recommender & feedback"""
     col1, col2 = st.columns([1, 1])
+
+    vitals = case['vitals']
 
     with col1:
         st.markdown("#### Patient Information")
@@ -525,10 +586,56 @@ def render_case_details(case, case_type):
         st.write(f"**Receiving Facility:** {case['receiving_facility']}")
 
         st.markdown("#### Vital Signs")
-        vitals = case['vitals']
         st.write(f"**HR:** {vitals['hr']} bpm | **SBP:** {vitals['sbp']} mmHg")
         st.write(f"**RR:** {vitals['rr']} rpm | **SpO₂:** {vitals['spo2']}%")
         st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
+
+        # === AI-DRIVEN CLINICAL RECOMMENDATION ===
+        st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
+
+        if AI_MODEL is None:
+            st.warning("AI model not available. Please ensure 'my_model.pkl' is present and loadable.")
+        else:
+            # Features: [age, sbp, spo2, hr]
+            features = [
+                float(case['patient_age']),
+                float(vitals['sbp']),
+                float(vitals['spo2']),
+                float(vitals['hr'])
+            ]
+
+            ai_state_key = f"ai_state_{case['case_id']}"
+            if ai_state_key not in st.session_state:
+                st.session_state[ai_state_key] = {"prediction": None, "features": None}
+
+            if st.button("Get AI Recommendation", key=f"ai_btn_{case['case_id']}"):
+                try:
+                    inp = np.array([features])
+                    pred = AI_MODEL.predict(inp)
+                    pred_str = str(pred[0])
+                    st.session_state[ai_state_key]["prediction"] = pred_str
+                    st.session_state[ai_state_key]["features"] = features
+                    st.success(f"AI Recommendation: {pred_str}")
+                except Exception as e:
+                    st.error(f"AI prediction failed: {e}")
+
+            # If we have an existing prediction, show it and allow feedback
+            current_pred = st.session_state[ai_state_key]["prediction"]
+            current_feats = st.session_state[ai_state_key]["features"]
+
+            if current_pred is not None and current_feats is not None:
+                st.info(f"Latest AI suggestion for this case: **{current_pred}**")
+
+                st.subheader("Was this recommendation helpful?")
+                feedback = st.radio(
+                    "Your Feedback",
+                    ("Yes", "No", "Unsure"),
+                    key=f"ai_fb_{case['case_id']}"
+                )
+
+                if st.button("Submit Feedback", key=f"ai_fb_btn_{case['case_id']}"):
+                    log_ai_feedback(case, current_feats, current_pred, feedback)
+                    st.success("Thank you for your feedback! Logged for model improvement.")
 
     with col2:
         st.markdown("#### Timeline & Interventions")
@@ -869,6 +976,11 @@ def main():
         render_quick_actions()
 
     # Sidebar
+    render_premium_sidebar()
+
+if __name__ == "__main__":
+    main()
+
     render_premium_sidebar()
 
 if __name__ == "__main__":
