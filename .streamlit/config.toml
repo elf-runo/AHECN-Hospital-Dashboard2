@@ -15,6 +15,3 @@ backgroundColor = "#ffffff"
 secondaryBackgroundColor = "#f8f9fa"
 textColor = "#0d1b2a"
 font = "sans serif"
-
-[runner]
-magicEnabled = false
