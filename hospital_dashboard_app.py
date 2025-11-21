@@ -18,7 +18,214 @@ try:
 except ImportError:
     joblib = None
 
-# === PAGE CONFIG (MUST BE FIRST STREAMLIT COMMAND) ===
+# =============================================================================
+# AI TRIAGE MODEL LOADING (SINGLE SOURCE OF TRUTH)
+# =============================================================================
+@st.cache_resource
+def load_triage_model():
+    """
+    Loads my_model.pkl from the same folder as this app.
+    Returns None if:
+      - joblib not installed
+      - file missing
+      - loading error (version mismatch, corruption, etc.)
+    """
+    if joblib is None:
+        return None
+
+    try:
+        app_dir = Path(__file__).resolve().parent
+        model_path = app_dir / "my_model.pkl"
+
+        if not model_path.exists():
+            return None
+
+        model = joblib.load(model_path)
+        return model
+
+    except Exception as e:
+        # Store error for diagnostics without crashing UI
+        st.session_state["ai_model_load_error"] = repr(e)
+        return None
+
+
+def get_ai_triage_suggestion(case):
+    """
+    Uses ML model if available, otherwise falls back to rule-based triage.
+    Model output is expected to be triage labels: "RED", "YELLOW", "GREEN".
+
+    Returns:
+        status: "ml" | "rules" | "error"
+        label:  "RED"|"YELLOW"|"GREEN"|None
+        text:   clinician-facing explanation
+        debug:  dict of inputs + any technical info
+    """
+    vitals = case.get("vitals", {}) if isinstance(case, dict) else case["vitals"]
+    age = float(case.get("patient_age", 50))
+    sbp = float(vitals.get("sbp", 110))
+    spo2 = float(vitals.get("spo2", 96))
+    hr = float(vitals.get("hr", 90))
+
+    debug = {"age": age, "sbp": sbp, "spo2": spo2, "hr": hr}
+
+    model = load_triage_model()
+
+    # ----------------- ML PATH -----------------
+    if model is not None:
+        try:
+            X = np.array([[age, sbp, spo2, hr]])
+            pred = model.predict(X)[0]
+            label = str(pred).upper().strip()
+
+            # Optional confidence
+            conf = None
+            if hasattr(model, "predict_proba"):
+                try:
+                    proba = model.predict_proba(X)[0]
+                    classes = [str(c).upper() for c in model.classes_]
+                    if label in classes:
+                        conf = float(proba[classes.index(label)]) * 100.0
+                except Exception:
+                    conf = None
+
+            debug["label"] = label
+            if conf is not None:
+                debug["confidence"] = conf
+
+            triage_explanations = {
+                "RED": (
+                    "AI detects a high-risk vital-sign pattern. Treat as **critical**. "
+                    "Immediate senior review, resuscitation readiness, and fastest transfer."
+                ),
+                "YELLOW": (
+                    "AI detects an **urgent** but not crashing pattern. "
+                    "Prompt senior review and close monitoring; prioritize transfer queue."
+                ),
+                "GREEN": (
+                    "AI detects a **stable** pattern based on current vitals. "
+                    "Routine care pathway with watchful monitoring."
+                ),
+            }
+
+            base_text = triage_explanations.get(
+                label,
+                "AI produced an unrecognized triage label. Please verify model/training."
+            )
+
+            if conf is not None:
+                text = f"AI Suggested Triage: **{label}** (confidence ~{conf:.0f}%). {base_text}"
+            else:
+                text = f"AI Suggested Triage: **{label}**. {base_text}"
+
+            return "ml", label, text, debug
+
+        except Exception as e:
+            debug["error"] = repr(e)
+            # fall through to rules as safe backup
+
+    # ----------------- RULES FALLBACK -----------------
+    try:
+        # Simple clinically aligned fallback (NEWS-style thresholds)
+        red_flags = 0
+        yellow_flags = 0
+
+        if sbp < 90 or sbp > 180:
+            red_flags += 1
+        elif 90 <= sbp < 100 or 160 < sbp <= 180:
+            yellow_flags += 1
+
+        if spo2 < 90:
+            red_flags += 1
+        elif 90 <= spo2 < 94:
+            yellow_flags += 1
+
+        if hr < 40 or hr > 140:
+            red_flags += 1
+        elif 110 <= hr <= 140 or 40 <= hr < 50:
+            yellow_flags += 1
+
+        if red_flags >= 1:
+            label = "RED"
+            text = (
+                "Rule-based backup suggests **RED** due to unstable vitals "
+                "(e.g., SBP < 90 / SpO₂ < 90 / HR extreme). Immediate intervention required."
+            )
+        elif yellow_flags >= 1:
+            label = "YELLOW"
+            text = (
+                "Rule-based backup suggests **YELLOW** due to abnormal vitals. "
+                "Urgent review required."
+            )
+        else:
+            label = "GREEN"
+            text = (
+                "Rule-based backup suggests **GREEN**. Vitals appear stable currently."
+            )
+
+        debug["label"] = label
+        debug["rule_red_flags"] = red_flags
+        debug["rule_yellow_flags"] = yellow_flags
+
+        return "rules", label, text, debug
+
+    except Exception as e:
+        debug["error"] = repr(e)
+        return "error", None, "Unable to score triage using ML or rules.", debug
+
+
+# =============================================================================
+# FEEDBACK LOGGING (OPTIONAL, SAFE)
+# =============================================================================
+FEEDBACK_LOG_PATH = "ai_feedback_log.csv"
+FEEDBACK_FIELDS = [
+    "timestamp_utc",
+    "case_id",
+    "patient_age",
+    "sbp",
+    "spo2",
+    "hr",
+    "ai_suggestion",
+    "feedback",
+    "engine"
+]
+
+def log_ai_feedback(case, debug, ai_suggestion, feedback, engine):
+    """Append feedback to CSV log for future model improvement."""
+    try:
+        file_exists = os.path.exists(FEEDBACK_LOG_PATH)
+        with open(FEEDBACK_LOG_PATH, mode="a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=FEEDBACK_FIELDS)
+            if not file_exists:
+                writer.writeheader()
+
+            writer.writerow({
+                "timestamp_utc": datetime.utcnow().isoformat(),
+                "case_id": case["case_id"],
+                "patient_age": debug.get("age"),
+                "sbp": debug.get("sbp"),
+                "spo2": debug.get("spo2"),
+                "hr": debug.get("hr"),
+                "ai_suggestion": ai_suggestion,
+                "feedback": feedback,
+                "engine": engine
+            })
+    except Exception:
+        pass
+
+
+# =============================================================================
+# UNIQUE KEY GENERATOR (prevents duplicate-element-key errors)
+# =============================================================================
+def get_unique_key(component_type, case_type, case_data, extra_suffix=""):
+    case_id = case_data.get("case_id", "unknown")
+    ts = case_data.get("timestamp", None)
+    ts_str = ts.strftime("%Y%m%d%H%M%S") if hasattr(ts, "strftime") else "notime"
+    return f"{component_type}_{case_type}_{case_id}_{ts_str}_{extra_suffix}"
+
+
+# =============================================================================
+# PAGE CONFIG
+# =============================================================================
 st.set_page_config(
     page_title="AHECN Hospital Command Center",
     layout="wide",
@@ -26,7 +233,9 @@ st.set_page_config(
     page_icon="🏥"
 )
 
-# === PREMIUM CSS STYLING ===
+# =============================================================================
+# PREMIUM CSS STYLING
+# =============================================================================
 st.markdown("""
 <style>
 :root {
@@ -40,7 +249,6 @@ st.markdown("""
     --light: #f8f9fa;
     --gradient: linear-gradient(135deg, #1a237e 0%, #283593 100%);
 }
-
 .main-header {
     background: var(--gradient);
     padding: 2rem;
@@ -49,7 +257,6 @@ st.markdown("""
     margin-bottom: 2rem;
     box-shadow: 0 8px 32px rgba(0,0,0,0.1);
 }
-
 .premium-card {
     background: white;
     border-radius: 15px;
@@ -59,12 +266,10 @@ st.markdown("""
     border: 1px solid #e0e0e0;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
-
 .premium-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 8px 30px rgba(0,0,0,0.12);
 }
-
 .case-card {
     background: white;
     border-radius: 12px;
@@ -75,16 +280,13 @@ st.markdown("""
     cursor: pointer;
     transition: all 0.3s ease;
 }
-
 .case-card:hover {
     transform: translateX(5px);
     box-shadow: 0 4px 20px rgba(0,0,0,0.1);
 }
-
 .case-card.critical { border-left-color: var(--danger); background: #fff5f5; }
 .case-card.urgent { border-left-color: var(--warning); background: #fffbf0; }
 .case-card.stable { border-left-color: var(--success); background: #f8fff8; }
-
 .metric-highlight {
     background: var(--gradient);
     color: white;
@@ -93,14 +295,12 @@ st.markdown("""
     text-align: center;
     box-shadow: 0 4px 15px rgba(0,0,0,0.1);
 }
-
 .timeline-event {
     border-left: 3px solid var(--accent);
     padding: 0.5rem 1rem;
     margin: 0.5rem 0;
     background: #f8f9ff;
 }
-
 .intervention-badge {
     display: inline-block;
     background: #e3f2fd;
@@ -111,7 +311,6 @@ st.markdown("""
     margin: 0.2rem;
     border: 1px solid #bbdefb;
 }
-
 .calendar-container {
     background: white;
     border-radius: 15px;
@@ -121,13 +320,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# === UTILITY FUNCTIONS ===
-def get_unique_key(prefix, case_type, case):
-    """Generate unique keys for Streamlit components"""
-    case_id = case.get('case_id', 'unknown')
-    return f"{prefix}_{case_type}_{case_id}_{int(time.time() * 1000)}"
-
-# === ENHANCED MEDICAL DATA CATALOGS ===
+# =============================================================================
+# ENHANCED MEDICAL DATA CATALOGS
+# =============================================================================
 ICD_CATALOG = [
     {"icd_code": "O72.0", "label": "Third-stage haemorrhage", "case_type": "Maternal", "age_min": 12, "age_max": 55},
     {"icd_code": "O72.1", "label": "Immediate postpartum haemorrhage", "case_type": "Maternal", "age_min": 12, "age_max": 55},
@@ -156,106 +351,12 @@ EMT_CREW = [
     {"id": "EMT_004", "name": "Lisa Park", "level": "Critical Care", "vehicle": "Mobile ICU", "status": "available"},
 ]
 
-# === AI MODEL LOADING (WITH CACHE) ===
-@st.cache_resource
-def load_triage_model():
-    """
-    Load the pre-trained model if possible.
-    Returns None if:
-      - joblib is not installed, or
-      - model file is not found, or
-      - loading fails for any reason.
-    """
-    if joblib is None:
-        st.sidebar.warning("⚠️ joblib not available - AI features limited")
-        return None
 
-    model_paths = ["my_model.pkl", "demo_model.pkl"]
-    for model_path in model_paths:
-        if os.path.exists(model_path):
-            try:
-                model = joblib.load(model_path)
-                st.sidebar.success(f"✅ AI model loaded from {model_path}")
-                return model
-            except Exception as e:
-                st.sidebar.error(f"❌ Error loading {model_path}: {e}")
-                continue
-
-    # Create a simple demo model if no model files exist
-    try:
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.datasets import make_classification
-        
-        # Create smaller, efficient model
-        X, y = make_classification(
-            n_samples=500,
-            n_features=4,
-            n_redundant=0,
-            n_informative=4,
-            random_state=42
-        )
-        
-        # Efficient model
-        model = RandomForestClassifier(
-            n_estimators=50,
-            max_depth=10,
-            random_state=42
-        )
-        model.fit(X, y)
-        
-        # Save as demo model
-        joblib.dump(model, "demo_model.pkl")
-        st.sidebar.success("✅ Created optimized demo AI model")
-        return model
-        
-    except Exception as e:
-        st.sidebar.error(f"❌ Demo model creation failed: {e}")
-        return None
-
-def get_triage_model():
-    return load_triage_model()
-
-# === FEEDBACK LOGGING ===
-FEEDBACK_LOG_PATH = "ai_feedback_log.csv"
-FEEDBACK_FIELDS = [
-    "timestamp_utc",
-    "case_id",
-    "patient_age",
-    "sbp",
-    "spo2",
-    "hr",
-    "ai_suggestion",
-    "feedback"
-]
-
-def log_ai_feedback(case, features, ai_suggestion, feedback):
-    """
-    Append feedback to CSV log for future analysis / model improvement.
-    `features` is expected as a 1D list [age, sbp, spo2, hr].
-    """
-    if not isinstance(features, (list, tuple)) or len(features) < 4:
-        return
-
-    file_exists = os.path.exists(FEEDBACK_LOG_PATH)
-    with open(FEEDBACK_LOG_PATH, mode="a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FEEDBACK_FIELDS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow({
-            "timestamp_utc": datetime.utcnow().isoformat(),
-            "case_id": case["case_id"],
-            "patient_age": features[0],
-            "sbp": features[1],
-            "spo2": features[2],
-            "hr": features[3],
-            "ai_suggestion": ai_suggestion,
-            "feedback": feedback
-        })
-
-# === ENHANCED DATA GENERATION ===
+# =============================================================================
+# ENHANCED DATA GENERATION
+# =============================================================================
 def generate_premium_synthetic_data(days_back=30):
     """Generate comprehensive synthetic data with realistic timelines"""
-
     facilities = [
         {"name": "Tertiary Central Hospital", "type": "Tertiary", "lat": 25.578, "lon": 91.893, "beds": 500},
         {"name": "District North General", "type": "District", "lat": 25.591, "lon": 91.878, "beds": 200},
@@ -264,7 +365,6 @@ def generate_premium_synthetic_data(days_back=30):
     ]
 
     case_types = ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"]
-
     referred_cases = []
     received_cases = []
 
@@ -277,7 +377,6 @@ def generate_premium_synthetic_data(days_back=30):
             case_type = random.choice(case_types)
             age = random.randint(18, 80) if case_type != "Maternal" else random.randint(18, 40)
 
-            # Generate realistic vitals
             if case_type == "Maternal":
                 vitals = {
                     "hr": random.randint(90, 140), "sbp": random.randint(80, 160),
@@ -297,19 +396,14 @@ def generate_premium_synthetic_data(days_back=30):
                     "spo2": random.randint(86, 95), "avpu": random.choices(["A", "V"], weights=[0.8, 0.2])[0]
                 }
 
-            # Select ICD code
             matching_icd = [icd for icd in ICD_CATALOG if icd["case_type"] == case_type and icd["age_min"] <= age <= icd["age_max"]]
             icd = random.choice(matching_icd) if matching_icd else random.choice([icd for icd in ICD_CATALOG if icd["case_type"] == case_type])
 
-            # Generate interventions
             interventions = random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(2, 4))
 
-            # Select facilities
             referring_facility = random.choice(["PHC Mawlai", "CHC Smit", "CHC Pynursla", "Rural Health Center"])
             receiving_facility = random.choice(facilities)
             emt_crew = random.choice(EMT_CREW)
-
-            # Transport details
             transport_time = random.randint(20, 90)
 
             case_id_ref = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
@@ -354,30 +448,34 @@ def generate_premium_synthetic_data(days_back=30):
         "emt_crews": EMT_CREW
     }
 
-# === SESSION STATE MANAGEMENT ===
-def initialize_session_state():
-    """Initialize all session state variables"""
-    if 'premium_data' not in st.session_state:
-        st.session_state.premium_data = generate_premium_synthetic_data(days_back=30)  # Reduced for performance
 
-    if 'current_tab' not in st.session_state:
+# =============================================================================
+# SESSION STATE
+# =============================================================================
+def initialize_session_state():
+    if "premium_data" not in st.session_state:
+        st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
+
+    if "current_tab" not in st.session_state:
         st.session_state.current_tab = "Dashboard"
 
-    if 'selected_case' not in st.session_state:
+    if "selected_case" not in st.session_state:
         st.session_state.selected_case = None
 
-    if 'search_terms' not in st.session_state:
+    if "search_terms" not in st.session_state:
         st.session_state.search_terms = {}
 
-    if 'date_filters' not in st.session_state:
+    if "date_filters" not in st.session_state:
         st.session_state.date_filters = {
             "start_date": datetime.now().date() - timedelta(days=7),
             "end_date": datetime.now().date()
         }
 
-# === PREMIUM DASHBOARD COMPONENTS ===
+
+# =============================================================================
+# UI COMPONENTS
+# =============================================================================
 def render_premium_header():
-    """Render premium header with key metrics"""
     st.markdown("""
     <div class="main-header">
         <h1 style="margin:0; font-size:2.5rem;">🏥 AHECN Hospital Command Center</h1>
@@ -385,7 +483,6 @@ def render_premium_header():
     </div>
     """, unsafe_allow_html=True)
 
-    # Key metrics row
     col1, col2, col3, col4, col5 = st.columns(5)
 
     data = st.session_state.premium_data
@@ -427,7 +524,7 @@ def render_premium_header():
         """, unsafe_allow_html=True)
 
     with col5:
-        avg_transport = data["received_cases"]["transport_time_minutes"].mean() if len(data["received_cases"]) > 0 else 0
+        avg_transport = data["received_cases"]["transport_time_minutes"].mean()
         st.markdown(f"""
         <div class="metric-highlight">
             <div style="font-size:2rem; font-weight:bold;">{avg_transport:.0f}m</div>
@@ -435,14 +532,13 @@ def render_premium_header():
         </div>
         """, unsafe_allow_html=True)
 
+
 def render_case_calendar():
-    """Interactive calendar for case management"""
     st.markdown("### 📅 Case Calendar & Timeline")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        # Date range selector
         date_range = st.date_input(
             "Select Date Range",
             value=(
@@ -463,7 +559,6 @@ def render_case_calendar():
         )
         filtered_referred = referred_df[mask]
 
-        # Case timeline visualization
         if not filtered_referred.empty:
             timeline_data = filtered_referred.copy()
             timeline_data["date"] = timeline_data["timestamp"].dt.date
@@ -483,63 +578,45 @@ def render_case_calendar():
     with col2:
         st.markdown("#### Quick Filters")
 
-        # Initialize filters in session state if not exists
-        if 'case_type_filter' not in st.session_state:
-            st.session_state.case_type_filter = ["Maternal", "Trauma", "Cardiac"]
-        if 'triage_filter' not in st.session_state:
-            st.session_state.triage_filter = ["RED", "YELLOW"]
-        if 'facility_filter' not in st.session_state:
-            st.session_state.facility_filter = ["Tertiary Central Hospital", "District North General", "Specialty South Medical", "Trauma East Center"]
-
-        st.session_state.case_type_filter = st.multiselect(
+        st.multiselect(
             "Case Types",
             options=["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"],
-            default=st.session_state.case_type_filter,
-            key="case_type_filter_select"
+            default=["Maternal", "Trauma", "Cardiac"],
+            key="case_type_filter"
         )
 
-        st.session_state.triage_filter = st.multiselect(
+        st.multiselect(
             "Triage Levels",
             options=["RED", "YELLOW", "GREEN"],
-            default=st.session_state.triage_filter,
-            key="triage_filter_select"
+            default=["RED", "YELLOW"],
+            key="triage_filter"
         )
 
         facilities = ["Tertiary Central Hospital", "District North General", "Specialty South Medical", "Trauma East Center"]
-        st.session_state.facility_filter = st.multiselect(
+        st.multiselect(
             "Receiving Facilities",
             options=facilities,
-            default=st.session_state.facility_filter,
-            key="facility_filter_select"
+            default=facilities,
+            key="facility_filter"
         )
 
         if st.button("Apply Filters", key="apply_filters_btn"):
             st.success(f"Filters applied to {len(filtered_referred)} cases")
 
+
 def render_interactive_case_list(case_type="referred"):
-    """Interactive case list with detailed views"""
     key_prefix = f"{case_type}_cases"
 
     st.markdown(f"### 📋 {'Referred' if case_type == 'referred' else 'Received'} Cases")
 
     cases_df = st.session_state.premium_data[f"{case_type}_cases"]
 
-    # Apply date filter
     mask = (
         (cases_df["timestamp"].dt.date >= st.session_state.date_filters["start_date"]) &
         (cases_df["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
     )
     filtered_cases = cases_df[mask]
 
-    # Apply additional filters from session state
-    if st.session_state.case_type_filter:
-        filtered_cases = filtered_cases[filtered_cases["case_type"].isin(st.session_state.case_type_filter)]
-    if st.session_state.triage_filter:
-        filtered_cases = filtered_cases[filtered_cases["triage_color"].isin(st.session_state.triage_filter)]
-    if st.session_state.facility_filter:
-        filtered_cases = filtered_cases[filtered_cases["receiving_facility"].isin(st.session_state.facility_filter)]
-
-    # Search and filter
     col1, col2, col3 = st.columns([2, 1, 1])
 
     with col1:
@@ -561,16 +638,14 @@ def render_interactive_case_list(case_type="referred"):
             key=f"{key_prefix}_pagination"
         )
 
-    # Filter cases based on search
     if search_term:
         filtered_cases = filtered_cases[
-            filtered_cases["case_id"].str.contains(search_term, case=False, na=False) |
-            filtered_cases["referring_facility"].str.contains(search_term, case=False, na=False) |
-            filtered_cases["icd_label"].str.contains(search_term, case=False, na=False) |
-            filtered_cases["receiving_facility"].str.contains(search_term, case=False, na=False)
+            filtered_cases["case_id"].str.contains(search_term, case=False) |
+            filtered_cases["referring_facility"].str.contains(search_term, case=False) |
+            filtered_cases["icd_label"].str.contains(search_term, case=False) |
+            filtered_cases["receiving_facility"].str.contains(search_term, case=False)
         ]
 
-    # Sort cases
     if sort_by == "Timestamp (Newest)":
         filtered_cases = filtered_cases.sort_values("timestamp", ascending=False)
     elif sort_by == "Timestamp (Oldest)":
@@ -584,9 +659,9 @@ def render_interactive_case_list(case_type="referred"):
     else:
         filtered_cases = filtered_cases.sort_values("case_type", ascending=True)
 
-    # Pagination
     if not filtered_cases.empty:
-        total_pages = max(1, int(len(filtered_cases) / items_per_page) + (1 if len(filtered_cases) % items_per_page else 0))
+        total_pages = int(len(filtered_cases) / items_per_page) + (1 if len(filtered_cases) % items_per_page else 0)
+        total_pages = max(total_pages, 1)
         page_number = st.number_input(
             "Page",
             min_value=1,
@@ -601,14 +676,13 @@ def render_interactive_case_list(case_type="referred"):
 
         st.write(f"Showing {len(paginated_cases)} of {len(filtered_cases)} cases")
 
-        # Display cases
         for display_idx, (_, case) in enumerate(paginated_cases.iterrows()):
             render_case_card(case, case_type, display_idx)
     else:
         st.info("No cases found matching the current filters")
 
+
 def render_case_card(case, case_type, index):
-    """Render individual case card"""
     triage_map = {"RED": "critical", "YELLOW": "urgent", "GREEN": "stable"}
     triage_class = triage_map.get(case["triage_color"], "")
     case_class = f"case-card {triage_class}"
@@ -633,15 +707,13 @@ def render_case_card(case, case_type, index):
         </div>
         """, unsafe_allow_html=True)
 
-        # Use a unique key for each expander
-        with st.expander(f"View full details for {case['case_id']}", key=f"expander_{case_type}_{case['case_id']}"):
+        with st.expander(f"View full details for {case['case_id']}"):
             render_case_details(case, case_type)
-            
+
+
 def render_case_details(case, case_type):
-    """Render detailed case information"""
     col1, col2 = st.columns([1, 1])
 
-    # LEFT COLUMN: patient + vitals
     with col1:
         st.markdown("#### Patient Information")
         st.write(f"**Case ID:** {case['case_id']}")
@@ -657,10 +729,8 @@ def render_case_details(case, case_type):
         st.write(f"**RR:** {vitals['rr']} rpm | **SpO₂:** {vitals['spo2']}%")
         st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
 
-    # RIGHT COLUMN: interventions + transport
     with col2:
         st.markdown("#### Timeline & Interventions")
-
         st.markdown("**Referring Interventions:**")
         for intervention in case["interventions_referring"]:
             st.markdown(
@@ -678,151 +748,51 @@ def render_case_details(case, case_type):
 
             st.markdown("#### Transport Details")
             st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
-            if 'emt_crew' in case and isinstance(case['emt_crew'], dict):
-                st.write(f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})")
+            st.write(
+                f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})"
+            )
             st.write(f"**Vehicle:** {case['vehicle_id']}")
             st.write(f"**Outcome:** {case['final_outcome']}")
             st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
 
-    # === AI-DRIVEN CLINICAL INNOVATION ===
-    st.markdown("#### 🧠 AI-Powered Triage Recommendation")
-    st.markdown("*Innovative Machine Learning for Emergency Care Prioritization*")
+    # -------------------------------------------------------------------------
+    # AI-Driven Clinical Recommendation (ML + safe fallback)
+    # -------------------------------------------------------------------------
+    st.markdown("#### 🧠 AI-Driven Clinical Recommendation")
 
-    vitals = case["vitals"]
-    age = case["patient_age"]
-    sbp = vitals["sbp"]
-    spo2 = vitals["spo2"]
-    hr = vitals["hr"]
+    engine, label, ai_text, debug = get_ai_triage_suggestion(case)
 
-    # Show clinical inputs
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Patient Age", f"{age} yrs")
-        st.metric("Systolic BP", f"{sbp} mmHg")
-    with col2:
-        st.metric("Oxygen Saturation", f"{spo2}%")
-        st.metric("Heart Rate", f"{hr} bpm")
+    st.markdown(
+        f"Using Age **{debug['age']:.0f} yrs**, SBP **{debug['sbp']:.0f} mmHg**, "
+        f"SpO₂ **{debug['spo2']:.0f}%**, HR **{debug['hr']:.0f} bpm** as inputs."
+    )
 
-    # Load AI model
-    model = get_triage_model()
+    if engine == "ml":
+        st.success(ai_text)
+    elif engine == "rules":
+        st.info(ai_text)
+        st.caption("ML model unavailable; using safe rule-based backup.")
+    else:
+        st.warning(ai_text)
 
-    if model is None:
-        st.warning("""
-        🔧 **AI Innovation Preview** 
-        *While the AI engine is currently optimizing, this demonstrates our integrated machine learning pipeline for:*
-        - Real-time patient triage prediction
-        - Clinical decision support
-        - Resource allocation optimization
-        - Emergency response prioritization
-        
-        *In full deployment, this AI analyzes vital signs to recommend optimal care pathways.*
-        """)
-        return
+    st.caption("AI output is decision-support only; final triage remains clinician-led.")
 
-    # AI Analysis Button
-    ai_button_key = get_unique_key("ai_innovation", case_type, case)
-    
-    if st.button("🚀 Run AI Triage Analysis", key=ai_button_key, type="primary"):
-        with st.spinner("🤖 AI analyzing patient data for optimal care pathway..."):
-            try:
-                # Prepare features for AI model
-                features = np.array([[float(age), float(sbp), float(spo2), float(hr)]])
-                
-                # Get AI prediction
-                prediction = model.predict(features)[0]
-                
-                # Enhanced triage mapping with clinical reasoning
-                triage_explanations = {
-                    "RED": {
-                        "title": "🚨 CRITICAL - Immediate Intervention Required",
-                        "reasoning": "AI detects high-risk pattern: Critical vitals indicate life-threatening condition requiring immediate specialist care and fastest possible transfer.",
-                        "actions": ["Immediate physician assessment", "Prepare emergency interventions", "Priority transport activation", "Alert receiving facility"],
-                        "color": "#ff4444"
-                    },
-                    "YELLOW": {
-                        "title": "⚠️ URGENT - Expedited Care Needed", 
-                        "reasoning": "AI identifies urgent clinical pattern: Patient requires prompt medical attention within 2 hours to prevent deterioration.",
-                        "actions": ["Expedited clinical review", "Close monitoring", "Urgent transport planning", "Specialist consultation"],
-                        "color": "#ffaa00"
-                    },
-                    "GREEN": {
-                        "title": "✅ STABLE - Routine Care Pathway",
-                        "reasoning": "AI analysis indicates stable condition: Patient can safely receive routine care without urgent intervention.",
-                        "actions": ["Standard monitoring", "Routine transport", "General ward admission", "Scheduled follow-up"],
-                        "color": "#00c853"
-                    }
-                }
-                
-                # Get AI recommendation
-                if isinstance(prediction, (int, np.integer)):
-                    triage_levels = ["GREEN", "YELLOW", "RED"]
-                    result = triage_explanations[triage_levels[prediction % 3]]
-                else:
-                    result = triage_explanations.get(str(prediction), triage_explanations["YELLOW"])
-                
-                # Display AI Innovation Results
-                st.markdown("---")
-                st.markdown("### 🎯 AI Clinical Recommendation")
-                
-                # Triage Card
-                st.markdown(f"""
-                <div style="
-                    margin: 1rem 0;
-                    padding: 1.5rem;
-                    border-radius: 12px;
-                    background: {result['color']}15;
-                    border-left: 6px solid {result['color']};
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-                ">
-                    <h3 style="margin: 0 0 0.5rem 0; color: {result['color']};">
-                        {result['title']}
-                    </h3>
-                    <p style="margin: 0 0 1rem 0; font-size: 1rem; color: #333;">
-                        <strong>AI Clinical Reasoning:</strong> {result['reasoning']}
-                    </p>
-                    <div style="background: {result['color']}30; padding: 1rem; border-radius: 8px;">
-                        <strong>Recommended Actions:</strong>
-                        <ul style="margin: 0.5rem 0 0 0;">
-                            {''.join([f'<li>{action}</li>' for action in result['actions']])}
-                        </ul>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # AI Confidence & Innovation Metrics
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("AI Confidence", "92%", "3%")
-                with col2:
-                    st.metric("Processing Time", "0.8s", "0.2s")
-                with col3:
-                    st.metric("Model Accuracy", "94%", "2%")
-                
-                # Innovation Context
-                with st.expander("🔍 How This AI Innovation Works"):
-                    st.markdown("""
-                    **Machine Learning in Emergency Medicine:**
-                    - **Algorithm**: Random Forest Classifier trained on 10,000+ emergency cases
-                    - **Features**: Age, Blood Pressure, Oxygen Saturation, Heart Rate
-                    - **Output**: Real-time triage prioritization (RED/YELLOW/GREEN)
-                    - **Impact**: Reduces decision time by 65%, improves resource allocation
-                    
-                    **Clinical Validation:**
-                    - 94% accuracy compared to expert physician triage
-                    - Reduces overtriage by 28%
-                    - Improves critical case identification by 32%
-                    """)
-                
-            except Exception as e:
-                st.error(f"🔧 AI Analysis Temporarily Unavailable: {str(e)}")
-                st.info("""
-                **Innovation Demonstration:**
-                This AI component represents our integrated machine learning pipeline for emergency care optimization.
-                In production, this system processes vital signs to provide real-time clinical decision support.
-                """)
+    # Feedback UI
+    st.subheader("Feedback on AI recommendation")
+    feedback_key = get_unique_key("ai_feedback_radio", case_type, case)
+    feedback = st.radio("Was this recommendation helpful?", ("Yes", "No", "Unsure"), key=feedback_key)
+
+    submit_key = get_unique_key("ai_feedback_btn", case_type, case)
+    if st.button("Submit AI Feedback", key=submit_key):
+        if label is None:
+            label_to_log = case["triage_color"]
+        else:
+            label_to_log = label
+        log_ai_feedback(case, debug, label_to_log, feedback, engine)
+        st.success("Thank you. Feedback recorded.")
+
 
 def render_advanced_analytics():
-    """Premium analytics dashboard"""
     st.markdown("### 📊 Advanced Analytics Dashboard")
 
     data = st.session_state.premium_data
@@ -831,7 +801,6 @@ def render_advanced_analytics():
         (data["referred_cases"]["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
     ]
 
-    # Overview metrics
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -843,7 +812,7 @@ def render_advanced_analytics():
         st.metric("Acceptance Rate", f"{acceptance_rate:.1f}%")
 
     with col3:
-        avg_transport = data["received_cases"]["transport_time_minutes"].mean() if len(data["received_cases"]) > 0 else 0
+        avg_transport = data["received_cases"]["transport_time_minutes"].mean()
         st.metric("Avg Transport Time", f"{avg_transport:.1f} min")
 
     with col4:
@@ -851,18 +820,15 @@ def render_advanced_analytics():
         st.metric("Critical Cases", critical_cases)
 
     if not filtered_cases.empty:
-        # Advanced charts
         col1, col2 = st.columns(2)
 
         with col1:
-            # Case type distribution
             st.markdown("#### Case Type Analysis")
             case_counts = filtered_cases["case_type"].value_counts()
             fig = px.pie(values=case_counts.values, names=case_counts.index, title="Cases by Type")
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # Triage distribution
             st.markdown("#### Triage Distribution")
             triage_counts = filtered_cases["triage_color"].value_counts()
             fig = px.bar(
@@ -874,12 +840,10 @@ def render_advanced_analytics():
             )
             st.plotly_chart(fig, use_container_width=True)
 
-        # Performance metrics
         st.markdown("#### Performance Trends")
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            # Daily trends
             daily_data = filtered_cases.copy()
             daily_data['date'] = daily_data['timestamp'].dt.date
             daily_trends = daily_data.groupby('date').size()
@@ -892,7 +856,6 @@ def render_advanced_analytics():
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
-            # Facility performance
             facility_performance = filtered_cases["receiving_facility"].value_counts()
             fig = px.pie(
                 values=facility_performance.values,
@@ -902,7 +865,6 @@ def render_advanced_analytics():
             st.plotly_chart(fig, use_container_width=True)
 
         with col3:
-            # Outcome analysis (for received cases)
             if not data["received_cases"].empty:
                 outcome_dist = data["received_cases"]["final_outcome"].value_counts()
                 fig = px.bar(
@@ -915,16 +877,15 @@ def render_advanced_analytics():
     else:
         st.info("No data available for analytics with current filters")
 
+
 def render_emt_tracking():
-    """Real-time EMT and ambulance tracking"""
     st.markdown("### 🚑 Real-time EMT Tracking")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        # Active transports
         st.markdown("#### Active Transports")
-        active_transports = st.session_state.premium_data["received_cases"].tail(3)  # Simulate active transports
+        active_transports = st.session_state.premium_data["received_cases"].tail(3)
 
         for _, transport in active_transports.iterrows():
             progress = random.randint(30, 90)
@@ -952,7 +913,6 @@ def render_emt_tracking():
             """, unsafe_allow_html=True)
 
     with col2:
-        # EMT crew status
         st.markdown("#### Crew Status")
         for idx, crew in enumerate(st.session_state.premium_data["emt_crews"]):
             status_color = "🟢" if crew["status"] == "active" else "🟡" if crew["status"] == "available" else "🔴"
@@ -961,15 +921,15 @@ def render_emt_tracking():
             if idx < len(st.session_state.premium_data["emt_crews"]) - 1:
                 st.write("---")
 
+
 def render_quick_actions():
-    """Quick action buttons for common tasks"""
     st.markdown("### ⚡ Quick Actions")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("🔄 Refresh All Data", use_container_width=True, key="refresh_data_btn_main"):
-            st.session_state.premium_data = generate_premium_synthetic_data(days_back=30)
+            st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
             st.success("Data refreshed successfully!")
 
         if st.button("📊 Generate Report", use_container_width=True, key="generate_report_btn_main"):
@@ -989,7 +949,6 @@ def render_quick_actions():
         if st.button("🖨️ Export Data", use_container_width=True, key="export_data_btn_main"):
             st.info("Preparing data export...")
 
-    # Quick referral form
     st.markdown("### 🏃 Quick Referral")
     with st.form("quick_referral_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -1009,15 +968,13 @@ def render_quick_actions():
         if st.form_submit_button("🚀 Create Emergency Referral", type="primary"):
             st.success(f"Emergency referral created for {patient_name}!")
 
+
 def render_dashboard_overview():
-    """Main dashboard overview"""
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        # Case calendar and timeline
         render_case_calendar()
 
-        # Recent activity
         st.markdown("### 📈 Recent Activity")
         recent_cases = st.session_state.premium_data["referred_cases"].tail(10)
 
@@ -1030,7 +987,6 @@ def render_dashboard_overview():
             """, unsafe_allow_html=True)
 
     with col2:
-        # System status
         st.markdown("### 🖥️ System Status")
 
         status_items = [
@@ -1051,7 +1007,6 @@ def render_dashboard_overview():
             </div>
             """, unsafe_allow_html=True)
 
-        # Quick stats
         st.markdown("### 📋 Quick Stats")
         stats = st.session_state.premium_data["referred_cases"]
         today = datetime.now().date()
@@ -1065,11 +1020,10 @@ def render_dashboard_overview():
         critical_pending = len(stats[(stats["triage_color"] == "RED") & (stats["status"] == "Pending")])
         st.metric("Critical Pending", critical_pending)
 
+
 def render_premium_sidebar():
-    """Premium sidebar with additional features"""
     st.sidebar.markdown("### 🔔 Live Alerts")
 
-    # Critical alerts
     critical_cases = st.session_state.premium_data["referred_cases"][
         st.session_state.premium_data["referred_cases"]["triage_color"] == "RED"
     ].tail(3)
@@ -1084,7 +1038,6 @@ def render_premium_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📈 Performance")
 
-    # Performance metrics
     metrics_df = st.session_state.premium_data["referred_cases"]
     acceptance_rate = (len(metrics_df[metrics_df["status"] == "Accepted"]) / len(metrics_df) * 100) if len(metrics_df) else 0
 
@@ -1095,58 +1048,44 @@ def render_premium_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🛠️ Tools")
 
-    # Tools buttons
     if st.sidebar.button("🔄 Force Refresh", key="sidebar_refresh_btn"):
-        st.session_state.premium_data = generate_premium_synthetic_data(days_back=30)
+        st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
         st.rerun()
 
     if st.sidebar.button("📋 Data Summary", key="sidebar_summary_btn"):
         total_cases = len(st.session_state.premium_data["referred_cases"])
         st.sidebar.info(f"Total Cases: {total_cases}")
 
-def render_diagnostic_panel():
-    """AI Innovation Status Panel"""
+    # AI status panel
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🤖 AI Innovation Status")
-    
-    # Model status
-    model_paths = ["my_model.pkl", "demo_model.pkl"]
-    model_found = False
-    for model_path in model_paths:
-        if os.path.exists(model_path):
-            try:
-                size = os.path.getsize(model_path)
-                st.sidebar.success(f"✅ AI Model: Ready ({size//1024} KB)")
-                model_found = True
-                break
-            except:
-                continue
-    
-    if not model_found:
+
+    app_dir = Path(__file__).resolve().parent
+    model_path = app_dir / "my_model.pkl"
+    if model_path.exists():
+        size = model_path.stat().st_size
+        st.sidebar.success(f"✅ AI Model: Ready ({size//1024} KB)")
+    else:
         st.sidebar.error("❌ AI Model: Not Deployed")
-    
-    # Dependencies
+
     try:
         import sklearn
-        st.sidebar.info(f"📊 scikit-learn: Available")
-    except:
+        st.sidebar.info(f"📊 scikit-learn: v{sklearn.__version__}")
+    except Exception:
         st.sidebar.error("❌ scikit-learn: Missing")
-    
-    # AI Capabilities
-    st.sidebar.markdown("**AI Features:**")
-    st.sidebar.markdown("- Real-time Triage Prediction")
-    st.sidebar.markdown("- Clinical Decision Support") 
-    st.sidebar.markdown("- Resource Optimization")
-    st.sidebar.markdown("- Emergency Prioritization")
 
+    if "ai_model_load_error" in st.session_state:
+        st.sidebar.warning("Model load warning:")
+        st.sidebar.code(st.session_state["ai_model_load_error"])
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
 def main():
-    # Initialize session state
     initialize_session_state()
-
-    # Render premium header
     render_premium_header()
 
-    # Main navigation tabs
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🏠 Dashboard",
         "📤 Referred Cases",
@@ -1174,9 +1113,8 @@ def main():
     with tab6:
         render_quick_actions()
 
-    # Sidebar
     render_premium_sidebar()
-    render_diagnostic_panel()
+
 
 if __name__ == "__main__":
     main()
