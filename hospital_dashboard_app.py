@@ -18,74 +18,7 @@ try:
 except ImportError:
     joblib = None
 
-# === DEMO MODEL CREATION ===
-def create_demo_model():
-    """Create a lightweight demo model for Streamlit Cloud"""
-    try:
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.datasets import make_classification
-        
-        # Create smaller, efficient model
-        X, y = make_classification(
-            n_samples=500,
-            n_features=4,
-            n_redundant=0,
-            n_informative=4,
-            random_state=42
-        )
-        
-        # Efficient model
-        model = RandomForestClassifier(
-            n_estimators=50,
-            max_depth=10,
-            random_state=42
-        )
-        model.fit(X, y)
-        
-        # Save as demo model
-        joblib.dump(model, "demo_model.pkl")
-        st.sidebar.success("✅ Created optimized demo AI model")
-        return model
-        
-    except Exception as e:
-        st.sidebar.error(f"❌ Demo model creation failed: {e}")
-        return None
-
-# === MINIMAL MODEL LOADING FOR STREAMLIT CLOUD ===
-@st.cache_resource
-def load_triage_model():
-    """
-    Model loader that handles version changes
-    """
-    try:
-        if joblib is None:
-            return None
-            
-        # Try to load model with error handling
-        if os.path.exists("my_model.pkl"):
-            model = joblib.load("my_model.pkl")
-            return model
-        else:
-            # Create a simple demo model
-            from sklearn.ensemble import RandomForestClassifier
-            from sklearn.datasets import make_classification
-            
-            X, y = make_classification(n_samples=100, n_features=4, random_state=42)
-            model = RandomForestClassifier(n_estimators=10, random_state=42)
-            model.fit(X, y)
-            
-            # Optional: save for future
-            joblib.dump(model, "demo_model.pkl")
-            return model
-            
-    except Exception as e:
-        st.sidebar.error(f"Model loading issue: {e}")
-        return None
-
-def get_triage_model():
-    return load_triage_model()
-    
-# === PAGE CONFIG ===
+# === PAGE CONFIG (MUST BE FIRST STREAMLIT COMMAND) ===
 st.set_page_config(
     page_title="AHECN Hospital Command Center",
     layout="wide",
@@ -188,6 +121,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# === UTILITY FUNCTIONS ===
+def get_unique_key(prefix, case_type, case):
+    """Generate unique keys for Streamlit components"""
+    case_id = case.get('case_id', 'unknown')
+    return f"{prefix}_{case_type}_{case_id}_{int(time.time() * 1000)}"
+
 # === ENHANCED MEDICAL DATA CATALOGS ===
 ICD_CATALOG = [
     {"icd_code": "O72.0", "label": "Third-stage haemorrhage", "case_type": "Maternal", "age_min": 12, "age_max": 55},
@@ -228,19 +167,53 @@ def load_triage_model():
       - loading fails for any reason.
     """
     if joblib is None:
+        st.sidebar.warning("⚠️ joblib not available - AI features limited")
         return None
 
-    model_path = "my_model.pkl"
-    if not os.path.exists(model_path):
-        return None
+    model_paths = ["my_model.pkl", "demo_model.pkl"]
+    for model_path in model_paths:
+        if os.path.exists(model_path):
+            try:
+                model = joblib.load(model_path)
+                st.sidebar.success(f"✅ AI model loaded from {model_path}")
+                return model
+            except Exception as e:
+                st.sidebar.error(f"❌ Error loading {model_path}: {e}")
+                continue
 
+    # Create a simple demo model if no model files exist
     try:
-        model = joblib.load(model_path)
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.datasets import make_classification
+        
+        # Create smaller, efficient model
+        X, y = make_classification(
+            n_samples=500,
+            n_features=4,
+            n_redundant=0,
+            n_informative=4,
+            random_state=42
+        )
+        
+        # Efficient model
+        model = RandomForestClassifier(
+            n_estimators=50,
+            max_depth=10,
+            random_state=42
+        )
+        model.fit(X, y)
+        
+        # Save as demo model
+        joblib.dump(model, "demo_model.pkl")
+        st.sidebar.success("✅ Created optimized demo AI model")
         return model
-    except Exception:
+        
+    except Exception as e:
+        st.sidebar.error(f"❌ Demo model creation failed: {e}")
         return None
 
-AI_MODEL = load_triage_model()
+def get_triage_model():
+    return load_triage_model()
 
 # === FEEDBACK LOGGING ===
 FEEDBACK_LOG_PATH = "ai_feedback_log.csv"
@@ -385,7 +358,7 @@ def generate_premium_synthetic_data(days_back=30):
 def initialize_session_state():
     """Initialize all session state variables"""
     if 'premium_data' not in st.session_state:
-        st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
+        st.session_state.premium_data = generate_premium_synthetic_data(days_back=30)  # Reduced for performance
 
     if 'current_tab' not in st.session_state:
         st.session_state.current_tab = "Dashboard"
@@ -454,7 +427,7 @@ def render_premium_header():
         """, unsafe_allow_html=True)
 
     with col5:
-        avg_transport = data["received_cases"]["transport_time_minutes"].mean()
+        avg_transport = data["received_cases"]["transport_time_minutes"].mean() if len(data["received_cases"]) > 0 else 0
         st.markdown(f"""
         <div class="metric-highlight">
             <div style="font-size:2rem; font-weight:bold;">{avg_transport:.0f}m</div>
@@ -510,26 +483,34 @@ def render_case_calendar():
     with col2:
         st.markdown("#### Quick Filters")
 
-        st.multiselect(
+        # Initialize filters in session state if not exists
+        if 'case_type_filter' not in st.session_state:
+            st.session_state.case_type_filter = ["Maternal", "Trauma", "Cardiac"]
+        if 'triage_filter' not in st.session_state:
+            st.session_state.triage_filter = ["RED", "YELLOW"]
+        if 'facility_filter' not in st.session_state:
+            st.session_state.facility_filter = ["Tertiary Central Hospital", "District North General", "Specialty South Medical", "Trauma East Center"]
+
+        st.session_state.case_type_filter = st.multiselect(
             "Case Types",
             options=["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"],
-            default=["Maternal", "Trauma", "Cardiac"],
-            key="case_type_filter"
+            default=st.session_state.case_type_filter,
+            key="case_type_filter_select"
         )
 
-        st.multiselect(
+        st.session_state.triage_filter = st.multiselect(
             "Triage Levels",
             options=["RED", "YELLOW", "GREEN"],
-            default=["RED", "YELLOW"],
-            key="triage_filter"
+            default=st.session_state.triage_filter,
+            key="triage_filter_select"
         )
 
         facilities = ["Tertiary Central Hospital", "District North General", "Specialty South Medical", "Trauma East Center"]
-        st.multiselect(
+        st.session_state.facility_filter = st.multiselect(
             "Receiving Facilities",
             options=facilities,
-            default=facilities,
-            key="facility_filter"
+            default=st.session_state.facility_filter,
+            key="facility_filter_select"
         )
 
         if st.button("Apply Filters", key="apply_filters_btn"):
@@ -549,6 +530,14 @@ def render_interactive_case_list(case_type="referred"):
         (cases_df["timestamp"].dt.date <= st.session_state.date_filters["end_date"])
     )
     filtered_cases = cases_df[mask]
+
+    # Apply additional filters from session state
+    if st.session_state.case_type_filter:
+        filtered_cases = filtered_cases[filtered_cases["case_type"].isin(st.session_state.case_type_filter)]
+    if st.session_state.triage_filter:
+        filtered_cases = filtered_cases[filtered_cases["triage_color"].isin(st.session_state.triage_filter)]
+    if st.session_state.facility_filter:
+        filtered_cases = filtered_cases[filtered_cases["receiving_facility"].isin(st.session_state.facility_filter)]
 
     # Search and filter
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -575,10 +564,10 @@ def render_interactive_case_list(case_type="referred"):
     # Filter cases based on search
     if search_term:
         filtered_cases = filtered_cases[
-            filtered_cases["case_id"].str.contains(search_term, case=False) |
-            filtered_cases["referring_facility"].str.contains(search_term, case=False) |
-            filtered_cases["icd_label"].str.contains(search_term, case=False) |
-            filtered_cases["receiving_facility"].str.contains(search_term, case=False)
+            filtered_cases["case_id"].str.contains(search_term, case=False, na=False) |
+            filtered_cases["referring_facility"].str.contains(search_term, case=False, na=False) |
+            filtered_cases["icd_label"].str.contains(search_term, case=False, na=False) |
+            filtered_cases["receiving_facility"].str.contains(search_term, case=False, na=False)
         ]
 
     # Sort cases
@@ -597,8 +586,7 @@ def render_interactive_case_list(case_type="referred"):
 
     # Pagination
     if not filtered_cases.empty:
-        total_pages = int(len(filtered_cases) / items_per_page) + (1 if len(filtered_cases) % items_per_page else 0)
-        total_pages = max(total_pages, 1)
+        total_pages = max(1, int(len(filtered_cases) / items_per_page) + (1 if len(filtered_cases) % items_per_page else 0))
         page_number = st.number_input(
             "Page",
             min_value=1,
@@ -645,8 +633,8 @@ def render_case_card(case, case_type, index):
         </div>
         """, unsafe_allow_html=True)
 
-        # Let Streamlit manage the expander key
-        with st.expander(f"View full details for {case['case_id']}"):
+        # Use a unique key for each expander
+        with st.expander(f"View full details for {case['case_id']}", key=f"expander_{case_type}_{case['case_id']}"):
             render_case_details(case, case_type)
             
 def render_case_details(case, case_type):
@@ -690,9 +678,8 @@ def render_case_details(case, case_type):
 
             st.markdown("#### Transport Details")
             st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
-            st.write(
-                f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})"
-            )
+            if 'emt_crew' in case and isinstance(case['emt_crew'], dict):
+                st.write(f"**EMT Crew:** {case['emt_crew']['name']} ({case['emt_crew']['level']})")
             st.write(f"**Vehicle:** {case['vehicle_id']}")
             st.write(f"**Outcome:** {case['final_outcome']}")
             st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
@@ -827,13 +814,13 @@ def render_case_details(case, case_type):
                     """)
                 
             except Exception as e:
-                st.error("🔧 AI Analysis Temporarily Unavailable")
+                st.error(f"🔧 AI Analysis Temporarily Unavailable: {str(e)}")
                 st.info("""
                 **Innovation Demonstration:**
                 This AI component represents our integrated machine learning pipeline for emergency care optimization.
                 In production, this system processes vital signs to provide real-time clinical decision support.
                 """)
-            
+
 def render_advanced_analytics():
     """Premium analytics dashboard"""
     st.markdown("### 📊 Advanced Analytics Dashboard")
@@ -856,7 +843,7 @@ def render_advanced_analytics():
         st.metric("Acceptance Rate", f"{acceptance_rate:.1f}%")
 
     with col3:
-        avg_transport = data["received_cases"]["transport_time_minutes"].mean()
+        avg_transport = data["received_cases"]["transport_time_minutes"].mean() if len(data["received_cases"]) > 0 else 0
         st.metric("Avg Transport Time", f"{avg_transport:.1f} min")
 
     with col4:
@@ -982,7 +969,7 @@ def render_quick_actions():
 
     with col1:
         if st.button("🔄 Refresh All Data", use_container_width=True, key="refresh_data_btn_main"):
-            st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
+            st.session_state.premium_data = generate_premium_synthetic_data(days_back=30)
             st.success("Data refreshed successfully!")
 
         if st.button("📊 Generate Report", use_container_width=True, key="generate_report_btn_main"):
@@ -1082,7 +1069,7 @@ def render_premium_sidebar():
     """Premium sidebar with additional features"""
     st.sidebar.markdown("### 🔔 Live Alerts")
 
-    # Critical alerts (your existing code)
+    # Critical alerts
     critical_cases = st.session_state.premium_data["referred_cases"][
         st.session_state.premium_data["referred_cases"]["triage_color"] == "RED"
     ].tail(3)
@@ -1097,7 +1084,7 @@ def render_premium_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📈 Performance")
 
-    # Performance metrics (your existing code)
+    # Performance metrics
     metrics_df = st.session_state.premium_data["referred_cases"]
     acceptance_rate = (len(metrics_df[metrics_df["status"] == "Accepted"]) / len(metrics_df) * 100) if len(metrics_df) else 0
 
@@ -1108,10 +1095,10 @@ def render_premium_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🛠️ Tools")
 
-    # Tools buttons (your existing code)
+    # Tools buttons
     if st.sidebar.button("🔄 Force Refresh", key="sidebar_refresh_btn"):
-        st.session_state.premium_data = generate_premium_synthetic_data(days_back=60)
-        st.experimental_rerun()
+        st.session_state.premium_data = generate_premium_synthetic_data(days_back=30)
+        st.rerun()
 
     if st.sidebar.button("📋 Data Summary", key="sidebar_summary_btn"):
         total_cases = len(st.session_state.premium_data["referred_cases"])
@@ -1123,16 +1110,25 @@ def render_diagnostic_panel():
     st.sidebar.markdown("### 🤖 AI Innovation Status")
     
     # Model status
-    if os.path.exists("my_model.pkl"):
-        size = os.path.getsize("my_model.pkl")
-        st.sidebar.success(f"✅ AI Model: Ready ({size//1024} KB)")
-    else:
+    model_paths = ["my_model.pkl", "demo_model.pkl"]
+    model_found = False
+    for model_path in model_paths:
+        if os.path.exists(model_path):
+            try:
+                size = os.path.getsize(model_path)
+                st.sidebar.success(f"✅ AI Model: Ready ({size//1024} KB)")
+                model_found = True
+                break
+            except:
+                continue
+    
+    if not model_found:
         st.sidebar.error("❌ AI Model: Not Deployed")
     
     # Dependencies
     try:
         import sklearn
-        st.sidebar.info(f"📊 scikit-learn: v{sklearn.__version__}")
+        st.sidebar.info(f"📊 scikit-learn: Available")
     except:
         st.sidebar.error("❌ scikit-learn: Missing")
     
@@ -1180,6 +1176,7 @@ def main():
 
     # Sidebar
     render_premium_sidebar()
+    render_diagnostic_panel()
 
 if __name__ == "__main__":
     main()
