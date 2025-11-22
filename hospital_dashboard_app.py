@@ -733,7 +733,7 @@ def safe_ai_predict(model, features):
     return label, "heuristic_fallback", "Model missing", reasoning
 
 def render_case_details(case, case_type):
-    col1, col2 = st.columns([1,1])
+    col1, col2 = st.columns([1, 1])
 
     with col1:
         st.markdown("#### Patient Information")
@@ -754,12 +754,18 @@ def render_case_details(case, case_type):
         st.markdown("#### Timeline & Interventions")
         st.markdown("**Referring Interventions:**")
         for itv in case["interventions_referring"]:
-            st.markdown(f'<div class="intervention-badge">{itv}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="intervention-badge">{itv}</div>',
+                unsafe_allow_html=True
+            )
 
         if case_type == "received":
             st.markdown("**Receiving Interventions:**")
             for itv in case["interventions_receiving"]:
-                st.markdown(f'<div class="intervention-badge">{itv}</div>', unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="intervention-badge">{itv}</div>',
+                    unsafe_allow_html=True
+                )
 
             st.markdown("#### Transport Details")
             st.write(f"**Transport Time:** {case['transport_time_minutes']} minutes")
@@ -783,12 +789,23 @@ def render_case_details(case, case_type):
     temp_c = float(vitals["temp"])
     avpu = vitals.get("avpu", "A")
 
-    # Optional oxygen input for NEWS2
+    # Optional oxygen input for NEWS2 (FIXED INDENTATION + UNIQUE KEYS)
+    oxy_key = get_unique_key("oxy", case_type, case)
+    spo2s2_key = get_unique_key("spo2s2", case_type, case)
+
     colA, colB = st.columns(2)
     with colA:
-        on_oxygen = st.checkbox("Patient on supplemental oxygen?", value=False, key=f"oxy_{case['case_id']}")
+        on_oxygen = st.checkbox(
+            "Patient on supplemental oxygen?",
+            value=False,
+            key=oxy_key
+        )
     with colB:
-        spo2_scale2 = st.checkbox("Use SpO₂ Scale 2 (COPD/hypercapnic)?", value=False, key=f"spo2s2_{case['case_id']}")
+        spo2_scale2 = st.checkbox(
+            "Use SpO₂ Scale 2 (COPD/hypercapnic)?",
+            value=False,
+            key=spo2s2_key
+        )
 
     # Show inputs
     c1, c2, c3 = st.columns(3)
@@ -800,7 +817,17 @@ def render_case_details(case, case_type):
     c3.metric("Temp", f"{temp_c} °C")
 
     # Compute score-based triage
-    triage_color, details = score_based_triage(case, on_oxygen=on_oxygen, spo2_scale2=spo2_scale2)
+    triage_color, details = score_based_triage(
+        case,
+        on_oxygen=on_oxygen,
+        spo2_scale2=spo2_scale2
+    )
+
+    # Store for feedback (so feedback UI appears)
+    last_pred_key = get_unique_key("ai_last_pred", case_type, case)
+    last_feat_key = get_unique_key("ai_last_features", case_type, case)
+    st.session_state[last_pred_key] = triage_color
+    st.session_state[last_feat_key] = [age, sbp, spo2, hr]
 
     # Display result
     color_map = {"RED": "#ff4444", "YELLOW": "#ffaa00", "GREEN": "#00c853"}
@@ -822,10 +849,12 @@ def render_case_details(case, case_type):
     """, unsafe_allow_html=True)
 
     if details.get("system") == "NEWS2 + qSOFA":
-        st.write(f"**NEWS2 Total:** {details['news2_total']}  (RR:{details['news2_parts']['rr']}, "
-                 f"SpO₂:{details['news2_parts']['spo2']}, O₂:{details['news2_parts']['oxygen']}, "
-                 f"SBP:{details['news2_parts']['sbp']}, HR:{details['news2_parts']['hr']}, "
-                 f"Temp:{details['news2_parts']['temp']}, AVPU:{details['news2_parts']['conc']})")
+        st.write(
+            f"**NEWS2 Total:** {details['news2_total']}  (RR:{details['news2_parts']['rr']}, "
+            f"SpO₂:{details['news2_parts']['spo2']}, O₂:{details['news2_parts']['oxygen']}, "
+            f"SBP:{details['news2_parts']['sbp']}, HR:{details['news2_parts']['hr']}, "
+            f"Temp:{details['news2_parts']['temp']}, AVPU:{details['news2_parts']['conc']})"
+        )
         st.write(f"**qSOFA:** {details['qsofa']} (≥2 upgrades risk)")
 
         if details["news2_total"] >= 7:
@@ -834,7 +863,6 @@ def render_case_details(case, case_type):
             st.info("NEWS2 5–6 = urgent clinical review threshold.")
         else:
             st.info("NEWS2 0–4 = low risk / routine monitoring.")
-
     else:
         st.write(f"**PEWS Score (placeholder):** {details['score']}")
         st.caption(details.get("notes", ""))
@@ -853,27 +881,27 @@ def render_case_details(case, case_type):
         except Exception as e:
             st.caption(f"ML model available but could not run here: {e}")
 
+    # =========================
+    # Feedback UI
+    # =========================
+    st.subheader("Was this recommendation helpful?")
+    fb_radio_key = get_unique_key("ai_fb_radio", case_type, case)
+    feedback = st.radio(
+        "Feedback",
+        ("Yes", "No", "Unsure"),
+        key=fb_radio_key,
+        horizontal=True
+    )
 
-
-    # Feedback UI (only if AI ran)
-    last_pred_key = get_unique_key("ai_last_pred", case_type, case)
-    last_feat_key = get_unique_key("ai_last_features", case_type, case)
-
-    if last_pred_key in st.session_state and last_feat_key in st.session_state:
-        st.subheader("Was this AI recommendation helpful?")
-        fb_radio_key = get_unique_key("ai_fb_radio", case_type, case)
-        feedback = st.radio("Feedback", ("Yes", "No", "Unsure"), key=fb_radio_key, horizontal=True)
-
-        fb_submit_key = get_unique_key("ai_fb_submit", case_type, case)
-        if st.button("Submit Feedback", key=fb_submit_key):
-            log_ai_feedback(
-                case,
-                st.session_state[last_feat_key],
-                st.session_state[last_pred_key],
-                feedback
-            )
-            st.success("Thanks — feedback logged.")
-
+    fb_submit_key = get_unique_key("ai_fb_submit", case_type, case)
+    if st.button("Submit Feedback", key=fb_submit_key):
+        log_ai_feedback(
+            case,
+            st.session_state[last_feat_key],
+            st.session_state[last_pred_key],
+            feedback
+        )
+        st.success("Thanks — feedback logged.")
 
 def render_advanced_analytics():
     st.markdown("### 📊 Advanced Analytics Dashboard")
