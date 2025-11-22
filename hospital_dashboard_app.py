@@ -50,6 +50,18 @@ import hashlib
 import time
 import csv
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+def parse_dt(x):
+    """Accept datetime or ISO string; return datetime (naive local tz)."""
+    if isinstance(x, datetime):
+        return x
+    if isinstance(x, str):
+        try:
+            return datetime.fromisoformat(x.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            return datetime.now()
+    return datetime.now()
+
 
 # joblib optional – used only if available
 try:
@@ -398,7 +410,7 @@ class AuditService:
             h = hashlib.sha256((prev_hash + payload_str + str(time.time())).encode()).hexdigest()
             cur.execute(
                 "INSERT INTO audit_log(ts,user,role,case_id,event_type,payload,prev_hash,hash) VALUES(?,?,?,?,?,?,?,?)",
-                (datetime.utcnow().isoformat(), user, role, case_id, event_type, payload_str, prev_hash, h)
+                (datetime.now(timezone.utc).isoformat(), user, role, case_id, event_type, payload_str, prev_hash, h)
             )
             conn.commit()
 
@@ -454,7 +466,7 @@ class DataService:
             for f in facilities:
                 conn.execute(
                     "INSERT OR REPLACE INTO facilities(facility_id,payload,updated_at) VALUES(?,?,?)",
-                    (f["facility_id"], json.dumps(f, default=str), datetime.utcnow().isoformat())
+                    (f["facility_id"], json.dumps(f, default=str), datetime.now(timezone.utc).isoformat())
                 )
             conn.commit()
 
@@ -470,21 +482,40 @@ class DataService:
         with self._conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO referrals(case_id,payload,created_at) VALUES(?,?,?)",
-                (case["case_id"], json.dumps(case, default=str), datetime.utcnow().isoformat())
+                (case["case_id"], json.dumps(case, default=str), datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
 
     def load_referrals(self):
         with self._conn() as conn:
             rows = conn.execute("SELECT payload FROM referrals").fetchall()
-        return [json.loads(r[0]) for r in rows]
 
+        cases = []
+        for r in rows:
+            c = json.loads(r[0])
+
+            # normalize top-level datetimes
+            for k in ["timestamp", "requested_at", "status_updated_at", "sla_escalated_at"]:
+                if k in c and c[k] is not None:
+                    c[k] = parse_dt(c[k])
+
+            # normalize transit update timestamps
+            tu = c.get("transit_updates", []) or []
+            for u in tu:
+                if "timestamp" in u:
+                    u["timestamp"] = parse_dt(u["timestamp"])
+            c["transit_updates"] = tu
+
+            cases.append(c)
+
+        return cases
+       
     # Outcomes
     def save_outcome(self, case_id, outcome_payload):
         with self._conn() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO outcomes(case_id,payload,adjudicated_at) VALUES(?,?,?)",
-                (case_id, json.dumps(outcome_payload, default=str), datetime.utcnow().isoformat())
+                (case_id, json.dumps(outcome_payload, default=str), datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
 
@@ -501,7 +532,7 @@ class DataService:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO offline_queue(payload,queued_at,synced) VALUES(?,?,0)",
-                (json.dumps(case, default=str), datetime.utcnow().isoformat())
+                (json.dumps(case, default=str), datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
 
@@ -520,7 +551,7 @@ class DataService:
         with self._conn() as conn:
             conn.execute(
                 "INSERT INTO ml_features(case_id,payload,captured_at) VALUES(?,?,?)",
-                (case_id, json.dumps(payload, default=str), datetime.utcnow().isoformat())
+                (case_id, json.dumps(payload, default=str), datetime.now(timezone.utc).isoformat())
             )
             conn.commit()
 
@@ -907,7 +938,10 @@ class ReferralService:
     def update_sla(case):
         if case.get("status") != "REQUESTED":
             return case
-        mins = (datetime.now() - case["requested_at"]).total_seconds() / 60
+
+        req_at = parse_dt(case.get("requested_at"))
+        mins = (datetime.now() - req_at).total_seconds() / 60
+
         sla = case.get("sla_minutes", 15)
         if mins > sla:
             case["escalation_level"] = case.get("escalation_level", 0) + 1
@@ -994,7 +1028,7 @@ DEFAULT_FACILITY_REGISTRY = [
         "on_call": {"neuro": True, "cardiac": True, "obgyn": True},
         "occupancy_pct": 82,
         "accepting_red_now": True,
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": datetime.now(timezone.utc).isoformat()
     },
     {
         "facility_id": "DNG01",
@@ -1010,7 +1044,7 @@ DEFAULT_FACILITY_REGISTRY = [
         "on_call": {"neuro": False, "cardiac": False, "obgyn": True},
         "occupancy_pct": 88,
         "accepting_red_now": False,
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": datetime.now(timezone.utc).isoformat()
     },
     {
         "facility_id": "SSM01",
@@ -1026,7 +1060,7 @@ DEFAULT_FACILITY_REGISTRY = [
         "on_call": {"neuro": True, "cardiac": True, "obgyn": False},
         "occupancy_pct": 76,
         "accepting_red_now": True,
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": datetime.now(timezone.utc).isoformat()
     },
     {
         "facility_id": "TEC01",
@@ -1042,7 +1076,7 @@ DEFAULT_FACILITY_REGISTRY = [
         "on_call": {"neuro": True, "cardiac": False, "obgyn": False},
         "occupancy_pct": 70,
         "accepting_red_now": True,
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": datetime.now(timezone.utc).isoformat()
     },
     {
         "facility_id": "CHC01",
@@ -1058,7 +1092,7 @@ DEFAULT_FACILITY_REGISTRY = [
         "on_call": {"neuro": False, "cardiac": False, "obgyn": True},
         "occupancy_pct": 92,
         "accepting_red_now": False,
-        "last_updated": datetime.utcnow().isoformat()
+        "last_updated": datetime.now(timezone.utc).isoformat()
     },
 ]
 
@@ -1125,7 +1159,7 @@ def refresh_live_availability(registry):
 
         g["beds"] = beds
         g["capabilities"] = caps
-        g["last_updated"] = datetime.utcnow().isoformat()
+        g["last_updated"] = datetime.now(timezone.utc).isoformat()
         updated.append(g)
     return updated
 
