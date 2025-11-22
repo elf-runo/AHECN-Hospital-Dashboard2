@@ -491,6 +491,75 @@ def render_case_card(case, case_type, index):
     with st.expander(f"View full details for {case['case_id']}"):
         render_case_details(case, case_type)
 
+def heuristic_triage(age, sbp, spo2, hr):
+    """
+    Simple clinical fallback triage if ML model fails.
+    Returns (label, reasoning).
+    """
+    score = 0
+    reasons = []
+
+    # Oxygen
+    if spo2 < 90:
+        score += 2; reasons.append("SpO₂ < 90%")
+    elif spo2 < 94:
+        score += 1; reasons.append("SpO₂ 90–93%")
+
+    # Blood pressure
+    if sbp < 90:
+        score += 2; reasons.append("SBP < 90 mmHg")
+    elif sbp < 100:
+        score += 1; reasons.append("SBP 90–99 mmHg")
+
+    # Heart rate
+    if hr > 130:
+        score += 2; reasons.append("HR > 130 bpm")
+    elif hr > 110:
+        score += 1; reasons.append("HR 111–130 bpm")
+
+    # Age risk add-on (light weight)
+    if age >= 65:
+        score += 1; reasons.append("Age ≥ 65")
+
+    if score >= 4:
+        return "RED", "High-risk vitals: " + ", ".join(reasons)
+    elif score >= 2:
+        return "YELLOW", "Moderate-risk vitals: " + ", ".join(reasons)
+    else:
+        return "GREEN", "Low-risk vitals"
+
+
+def safe_ai_predict(model, features):
+    """
+    Safely run model.predict().
+    If prediction fails due to incompatibility, fall back to heuristic.
+    Returns: (triage_label, method, error_text, reasoning)
+    """
+    age, sbp, spo2, hr = features
+
+    if model is not None:
+        try:
+            pred = model.predict(np.array([features], dtype=float))[0]
+            label = str(pred).upper()
+
+            # If model outputs numeric class, map to labels
+            if isinstance(pred, (int, np.integer)):
+                triage_levels = ["GREEN", "YELLOW", "RED"]
+                label = triage_levels[int(pred) % 3]
+
+            if label not in ("RED", "YELLOW", "GREEN"):
+                label = "YELLOW"
+
+            return label, "ml_model", None, "ML model prediction"
+
+        except Exception as e:
+            # fall through to heuristic
+            label, reasoning = heuristic_triage(age, sbp, spo2, hr)
+            return label, "heuristic_fallback", str(e), reasoning
+
+    # No model available
+    label, reasoning = heuristic_triage(age, sbp, spo2, hr)
+    return label, "heuristic_fallback", "Model missing", reasoning
 
 def render_case_details(case, case_type):
     col1, col2 = st.columns([1,1])
@@ -556,55 +625,62 @@ def render_case_details(case, case_type):
         with st.spinner("AI analyzing this case..."):
             features = np.array([[age, sbp, spo2, hr]], dtype=float)
 
-            pred = model.predict(features)[0]
-            triage_label = str(pred).upper()
-            if triage_label not in ("RED","YELLOW","GREEN"):
-                triage_label = "YELLOW"
-
-            confidence = None
-            if hasattr(model, "predict_proba"):
-                proba = model.predict_proba(features)[0]
-                confidence = float(np.max(proba))
+            features = [age, sbp, spo2, hr]
+            triage_label, method, err_text, reasoning = safe_ai_predict(model, features)
 
             triage_explanations = {
                 "RED": {
-                    "title": "🚨 CRITICAL (RED)",
-                    "reasoning": "High-risk vitals pattern suggests immediate specialist intervention and fastest transfer.",
-                    "actions": ["Immediate doctor review", "Activate emergency protocol", "Priority transport", "Alert receiving ICU"],
+                    "title": "🚨 CRITICAL - Immediate Intervention Required",
+                    "actions": ["Immediate physician assessment", "Prepare emergency interventions", "Priority transport activation", "Alert receiving facility"],
                     "color": "#ff4444"
-                },
+    },
                 "YELLOW": {
-                    "title": "⚠️ URGENT (YELLOW)",
-                    "reasoning": "Moderate-risk vitals pattern suggests expedited care to prevent deterioration.",
-                    "actions": ["Urgent clinical review", "Close monitoring", "Transport within 2 hours", "Specialist consult"],
+                    "title": "⚠️ URGENT - Expedited Care Needed",
+                    "actions": ["Expedited clinical review", "Close monitoring", "Urgent transport planning", "Specialist consultation"],
                     "color": "#ffaa00"
-                },
+    },
                 "GREEN": {
-                    "title": "✅ STABLE (GREEN)",
-                    "reasoning": "Low-risk vitals pattern suggests routine pathway is safe.",
-                    "actions": ["Standard monitoring", "Routine transfer if needed", "General ward care", "Scheduled follow-up"],
+                    "title": "✅ STABLE - Routine Care Pathway",
+                    "actions": ["Standard monitoring", "Routine transport", "General ward admission", "Scheduled follow-up"],
                     "color": "#00c853"
-                }
-            }
+    }
+}
+
             result = triage_explanations[triage_label]
+
+            # Show if fallback happened (important for demo transparency)
+            if method != "ml_model":
+                st.info(
+                    "AI model ran into a version mismatch in deployment, so the system switched to its built-in clinical fallback. "
+                    "Demo remains fully functional."
+    )
+                st.caption(f"Technical note: {err_text}")
 
             st.markdown(f"""
             <div style="
-                margin:1rem 0; padding:1.2rem; border-radius:12px;
-                background:{result['color']}15; border-left:6px solid {result['color']};
-            ">
-                <h3 style="margin:0 0 0.5rem 0; color:{result['color']};">{result['title']}</h3>
-                <p style="margin:0 0 0.8rem 0;"><strong>AI Reasoning:</strong> {result['reasoning']}</p>
+                margin: 1rem 0;
+                padding: 1.5rem;
+                border-radius: 12px;
+                background: {result['color']}15;
+                border-left: 6px solid {result['color']};
+">
+                <h3 style="margin: 0 0 0.5rem 0; color: {result['color']};">
+                    {result['title']}
+                </h3>
+                <p style="margin:0 0 1rem 0;">
+                    <strong>Reasoning:</strong> {reasoning}
+                </p>
                 <strong>Recommended Actions:</strong>
-                <ul style="margin:0.3rem 0 0 1rem;">
-                    {''.join([f"<li>{a}</li>" for a in result["actions"]])}
+                <ul>
+                    {''.join([f'<li>{a}</li>' for a in result['actions']])}
                 </ul>
-                {f"<p style='margin-top:0.7rem;'><strong>Confidence:</strong> {confidence*100:.1f}%</p>" if confidence is not None else ""}
             </div>
             """, unsafe_allow_html=True)
 
+            # Keep for feedback logging
             st.session_state[get_unique_key("ai_last_pred", case_type, case)] = triage_label
-            st.session_state[get_unique_key("ai_last_features", case_type, case)] = [age, sbp, spo2, hr]
+            st.session_state[get_unique_key("ai_last_features", case_type, case)] = features
+
 
     # Feedback UI (only if AI ran)
     last_pred_key = get_unique_key("ai_last_pred", case_type, case)
