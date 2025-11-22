@@ -232,6 +232,177 @@ EMT_CREW = [
     {"id": "EMT_004", "name": "Lisa Park", "level": "Critical Care", "vehicle": "Mobile ICU", "status": "available"},
 ]
 
+# =========================
+# CLINICALLY-ACCEPTED SCORING ENGINE
+# =========================
+
+def calculate_qsofa(rr, sbp, avpu):
+    """
+    qSOFA adult criteria:
+    - RR >= 22 -> 1
+    - SBP <= 100 -> 1
+    - Altered mentation (not Alert) -> 1
+    Score 0-3. qSOFA >=2 = high risk.
+    """
+    score = 0
+    if rr >= 22:
+        score += 1
+    if sbp <= 100:
+        score += 1
+    if str(avpu).upper() != "A":  # A=Alert, anything else = altered
+        score += 1
+    return score
+
+
+def calculate_news2(age, rr, spo2, sbp, hr, temp_c, avpu, on_oxygen=False, spo2_scale2=False):
+    """
+    NEWS2 for adults (>=16 yrs). Uses RCP standard bands.
+    For MVP: default Scale 1 SpO2 unless spo2_scale2=True.
+    """
+
+    # RR scoring
+    if rr <= 8: rr_score = 3
+    elif 9 <= rr <= 11: rr_score = 1
+    elif 12 <= rr <= 20: rr_score = 0
+    elif 21 <= rr <= 24: rr_score = 2
+    else: rr_score = 3  # >=25
+
+    # SpO2 scoring (Scale 1 default)
+    if not spo2_scale2:
+        if spo2 <= 91: spo2_score = 3
+        elif 92 <= spo2 <= 93: spo2_score = 2
+        elif 94 <= spo2 <= 95: spo2_score = 1
+        else: spo2_score = 0  # >=96
+    else:
+        # Scale 2 (COPD/hypercapnic) – use only if clinician selects it
+        if spo2 <= 83: spo2_score = 3
+        elif 84 <= spo2 <= 85: spo2_score = 2
+        elif 86 <= spo2 <= 87: spo2_score = 1
+        elif 88 <= spo2 <= 92: spo2_score = 0
+        else: spo2_score = 3  # >=93 on Scale 2 is abnormal high
+
+    # Oxygen adds 2 points
+    oxygen_score = 2 if on_oxygen else 0
+
+    # SBP scoring
+    if sbp <= 90: sbp_score = 3
+    elif 91 <= sbp <= 100: sbp_score = 2
+    elif 101 <= sbp <= 110: sbp_score = 1
+    elif 111 <= sbp <= 219: sbp_score = 0
+    else: sbp_score = 3  # >=220
+
+    # HR scoring
+    if hr <= 40: hr_score = 3
+    elif 41 <= hr <= 50: hr_score = 1
+    elif 51 <= hr <= 90: hr_score = 0
+    elif 91 <= hr <= 110: hr_score = 1
+    elif 111 <= hr <= 130: hr_score = 2
+    else: hr_score = 3  # >=131
+
+    # Temp scoring
+    if temp_c <= 35.0: temp_score = 3
+    elif 35.1 <= temp_c <= 36.0: temp_score = 1
+    elif 36.1 <= temp_c <= 38.0: temp_score = 0
+    elif 38.1 <= temp_c <= 39.0: temp_score = 1
+    else: temp_score = 2  # >=39.1
+
+    # Consciousness scoring (AVPU / new confusion)
+    avpu_u = str(avpu).upper()
+    if avpu_u == "A":
+        conc_score = 0
+    else:
+        conc_score = 3  # V/P/U/CVPU/new confusion
+
+    total = rr_score + spo2_score + oxygen_score + sbp_score + hr_score + temp_score + conc_score
+
+    parts = {
+        "rr": rr_score,
+        "spo2": spo2_score,
+        "oxygen": oxygen_score,
+        "sbp": sbp_score,
+        "hr": hr_score,
+        "temp": temp_score,
+        "conc": conc_score
+    }
+    return total, parts
+
+
+def calculate_pews_placeholder(age, rr, spo2, sbp, hr, avpu):
+    """
+    MVP placeholder PEWS:
+    You should replace this later with your chosen PEWS chart.
+    For now, return a simple risk score 0-6 based on gross abnormalities.
+    """
+    score = 0
+    # crude pediatric risk flags
+    if rr > 40 or rr < 10: score += 2
+    if spo2 < 92: score += 2
+    if sbp < 80: score += 1
+    if hr > 160 or hr < 60: score += 1
+    if str(avpu).upper() != "A": score += 2
+    return min(score, 6)
+
+
+def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
+    """
+    Returns:
+      triage_color, explanation_dict
+    """
+    vitals = case["vitals"]
+    age = float(case["patient_age"])
+    rr = float(vitals["rr"])
+    spo2 = float(vitals["spo2"])
+    sbp = float(vitals["sbp"])
+    hr = float(vitals["hr"])
+    temp_c = float(vitals["temp"])
+    avpu = vitals.get("avpu", "A")
+
+    if age < 16:
+        pews = calculate_pews_placeholder(age, rr, spo2, sbp, hr, avpu)
+        # simple mapping
+        if pews >= 4:
+            triage = "RED"
+        elif pews >= 2:
+            triage = "YELLOW"
+        else:
+            triage = "GREEN"
+        return triage, {
+            "system": "PEWS (placeholder)",
+            "score": pews,
+            "components": {},
+            "notes": "Replace placeholder with hospital PEWS chart later."
+        }
+
+    # Adults (>=16)
+    news2_total, news2_parts = calculate_news2(
+        age, rr, spo2, sbp, hr, temp_c, avpu,
+        on_oxygen=on_oxygen,
+        spo2_scale2=spo2_scale2
+    )
+    qsofa = calculate_qsofa(rr, sbp, avpu)
+
+    # NEWS2 escalation thresholds:
+    # 0-4 low risk, 5-6 urgent, >=7 emergency
+    if news2_total >= 7:
+        triage = "RED"
+    elif news2_total >= 5:
+        triage = "YELLOW"
+    else:
+        triage = "GREEN"
+
+    # Upgrade one level if qSOFA >=2
+    if qsofa >= 2:
+        if triage == "GREEN":
+            triage = "YELLOW"
+        elif triage == "YELLOW":
+            triage = "RED"
+
+    return triage, {
+        "system": "NEWS2 + qSOFA",
+        "news2_total": news2_total,
+        "news2_parts": news2_parts,
+        "qsofa": qsofa
+    }
 
 # =========================
 # SYNTHETIC DATA GENERATION
@@ -597,89 +768,91 @@ def render_case_details(case, case_type):
             st.write(f"**Outcome:** {case['final_outcome']}")
             st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
 
-    # ---------------------------
-    # AI TRIAGE RECOMMENDATION UI
-    # ---------------------------
-    st.markdown("---")
-    st.markdown("#### 🧠 AI-Powered Triage Recommendation")
+    # =========================
+    # AI / SCORE-BASED TRIAGE PANEL
+    # =========================
+    st.markdown("#### 🧠 Clinical Triage Recommendation (Score-Based)")
+    st.caption("Uses NEWS2 + qSOFA for adults, PEWS for paediatrics. Deterministic and clinically accepted.")
 
     vitals = case["vitals"]
     age = float(case["patient_age"])
     sbp = float(vitals["sbp"])
     spo2 = float(vitals["spo2"])
     hr = float(vitals["hr"])
+    rr = float(vitals["rr"])
+    temp_c = float(vitals["temp"])
+    avpu = vitals.get("avpu", "A")
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Age", f"{age:.0f} yrs")
-    c2.metric("SBP", f"{sbp:.0f} mmHg")
-    c3.metric("SpO₂", f"{spo2:.0f}%")
-    c4.metric("HR", f"{hr:.0f} bpm")
+    # Optional oxygen input for NEWS2
+    colA, colB = st.columns(2)
+    with colA:
+        on_oxygen = st.checkbox("Patient on supplemental oxygen?", value=False, key=f"oxy_{case['case_id']}")
+    with colB:
+        spo2_scale2 = st.checkbox("Use SpO₂ Scale 2 (COPD/hypercapnic)?", value=False, key=f"spo2s2_{case['case_id']}")
 
+    # Show inputs
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Age", f"{int(age)} yrs")
+    c1.metric("SBP", f"{sbp} mmHg")
+    c2.metric("SpO₂", f"{spo2}%")
+    c2.metric("RR", f"{rr}/min")
+    c3.metric("HR", f"{hr} bpm")
+    c3.metric("Temp", f"{temp_c} °C")
+
+    # Compute score-based triage
+    triage_color, details = score_based_triage(case, on_oxygen=on_oxygen, spo2_scale2=spo2_scale2)
+
+    # Display result
+    color_map = {"RED": "#ff4444", "YELLOW": "#ffaa00", "GREEN": "#00c853"}
+    triage_hex = color_map[triage_color]
+
+    st.markdown(f"""
+    <div style="
+        margin: 0.5rem 0 1rem 0;
+        padding: 1rem 1.2rem;
+        border-radius: 12px;
+        background: {triage_hex}15;
+        border-left: 6px solid {triage_hex};
+    ">
+        <h4 style="margin:0; color:{triage_hex};">Recommended Triage: {triage_color}</h4>
+        <div style="color:#333; margin-top:0.5rem;">
+            <b>System:</b> {details.get("system")}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if details.get("system") == "NEWS2 + qSOFA":
+        st.write(f"**NEWS2 Total:** {details['news2_total']}  (RR:{details['news2_parts']['rr']}, "
+                 f"SpO₂:{details['news2_parts']['spo2']}, O₂:{details['news2_parts']['oxygen']}, "
+                 f"SBP:{details['news2_parts']['sbp']}, HR:{details['news2_parts']['hr']}, "
+                 f"Temp:{details['news2_parts']['temp']}, AVPU:{details['news2_parts']['conc']})")
+        st.write(f"**qSOFA:** {details['qsofa']} (≥2 upgrades risk)")
+
+        if details["news2_total"] >= 7:
+            st.info("NEWS2 ≥7 = emergency response threshold.")
+        elif details["news2_total"] >= 5:
+            st.info("NEWS2 5–6 = urgent clinical review threshold.")
+        else:
+            st.info("NEWS2 0–4 = low risk / routine monitoring.")
+
+    else:
+        st.write(f"**PEWS Score (placeholder):** {details['score']}")
+        st.caption(details.get("notes", ""))
+
+    # =========================
+    # Optional ML Model Comparison
+    # =========================
     model = get_triage_model()
-    if model is None:
-        st.warning("AI engine is not available on this deployment (model missing or incompatible). Clinical view above remains fully usable.")
-        return
-
-    ai_btn_key = get_unique_key("ai_run_btn", case_type, case)
-    if st.button("Run AI Triage Analysis", key=ai_btn_key, type="primary"):
-        with st.spinner("AI analyzing this case..."):
+    if model is not None:
+        try:
             features = np.array([[age, sbp, spo2, hr]], dtype=float)
+            ml_pred = str(model.predict(features)[0])
+            st.markdown("#### 🤖 ML Model Suggestion (Optional)")
+            st.write(f"**Model output:** {ml_pred}")
+            st.caption("For demo only. Production model must be validated against local clinical pathways.")
+        except Exception as e:
+            st.caption(f"ML model available but could not run here: {e}")
 
-            features = [age, sbp, spo2, hr]
-            triage_label, method, err_text, reasoning = safe_ai_predict(model, features)
-
-            triage_explanations = {
-                "RED": {
-                    "title": "🚨 CRITICAL - Immediate Intervention Required",
-                    "actions": ["Immediate physician assessment", "Prepare emergency interventions", "Priority transport activation", "Alert receiving facility"],
-                    "color": "#ff4444"
-    },
-                "YELLOW": {
-                    "title": "⚠️ URGENT - Expedited Care Needed",
-                    "actions": ["Expedited clinical review", "Close monitoring", "Urgent transport planning", "Specialist consultation"],
-                    "color": "#ffaa00"
-    },
-                "GREEN": {
-                    "title": "✅ STABLE - Routine Care Pathway",
-                    "actions": ["Standard monitoring", "Routine transport", "General ward admission", "Scheduled follow-up"],
-                    "color": "#00c853"
-    }
-}
-
-            result = triage_explanations[triage_label]
-
-            # Show if fallback happened (important for demo transparency)
-            if method != "ml_model":
-                st.info(
-                    "AI model ran into a version mismatch in deployment, so the system switched to its built-in clinical fallback. "
-                    "Demo remains fully functional."
-    )
-                st.caption(f"Technical note: {err_text}")
-
-            st.markdown(f"""
-            <div style="
-                margin: 1rem 0;
-                padding: 1.5rem;
-                border-radius: 12px;
-                background: {result['color']}15;
-                border-left: 6px solid {result['color']};
-">
-                <h3 style="margin: 0 0 0.5rem 0; color: {result['color']};">
-                    {result['title']}
-                </h3>
-                <p style="margin:0 0 1rem 0;">
-                    <strong>Reasoning:</strong> {reasoning}
-                </p>
-                <strong>Recommended Actions:</strong>
-                <ul>
-                    {''.join([f'<li>{a}</li>' for a in result['actions']])}
-                </ul>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Keep for feedback logging
-            st.session_state[get_unique_key("ai_last_pred", case_type, case)] = triage_label
-            st.session_state[get_unique_key("ai_last_features", case_type, case)] = features
 
 
     # Feedback UI (only if AI ran)
