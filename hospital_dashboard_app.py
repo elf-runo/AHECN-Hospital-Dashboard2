@@ -10,13 +10,13 @@ import math
 import os
 import csv
 from pathlib import Path
+DASHBOARD_HOSPITAL = "Tertiary Central Hospital"
 
 # joblib is optional – used only if available
 try:
     import joblib  # for loading the ML model
 except ImportError:
     joblib = None
-
 
 # =========================
 # AI MODEL LOADING + UTILS
@@ -231,6 +231,40 @@ EMT_CREW = [
     {"id": "EMT_003", "name": "Mike Rodriguez", "level": "ALS", "vehicle": "Ambulance 3", "status": "available"},
     {"id": "EMT_004", "name": "Lisa Park", "level": "Critical Care", "vehicle": "Mobile ICU", "status": "available"},
 ]
+REFERRAL_REASONS = {
+    "ICU_BED_UNAVAILABLE": [
+        "ICU bed unavailable / ventilator shortage",
+        "Requires HDU/ICU escalation not available"
+    ],
+    "SPECIALTY_REQUIRED": {
+        "Maternal": ["ObGyn + OT + blood bank required", "Emergency C-section capability needed"],
+        "Trauma":   ["Neurosurgery/orthopedics required", "Polytrauma needs trauma surgeon"],
+        "Stroke":   ["CT/MRI + thrombolysis capability needed", "Neuro-intervention required"],
+        "Cardiac":  ["Cath lab / PCI required", "Cardiologist + CCU required"],
+        "Sepsis":   ["ICU + vasopressor support required", "Infectious disease consult required"],
+        "Other":    ["Pulmonology/critical care required", "Specialist consult needed"]
+    },
+    "EQUIPMENT_REQUIRED": {
+        "Maternal": ["Massive transfusion protocol / blood products", "OT + anesthesia required"],
+        "Trauma":   ["CT head/spine required", "Emergency OR required"],
+        "Stroke":   ["CT angiography / thrombolysis suite required"],
+        "Cardiac":  ["Cath lab / ECG telemetry required"],
+        "Sepsis":   ["Lactate/ABG monitoring + ICU pumps required"],
+        "Other":    ["Ventilator/BiPAP required"]
+    }
+}
+
+ICD_INTERVENTION_MAP = {
+    "O72.0": ["IV fluids", "Uterotonics", "TXA", "Fundal massage", "Oxygen"],
+    "O72.1": ["IV fluids", "Uterotonics", "TXA", "BP monitoring", "Oxygen"],
+    "O14.1": ["BP monitoring", "IV access", "Magnesium sulfate prep", "Oxygen"],
+    "S06.0": ["Airway management", "Immobilization", "Pain management", "Oxygen"],
+    "S06.5": ["Airway management", "Bleeding control", "Immobilization", "Emergency surgery prep"],
+    "I63.9": ["BP control", "Glucose check", "Neurological assessment", "CT scan prep"],
+    "I21.9": ["Aspirin", "ECG monitoring", "Oxygen", "Nitroglycerin"],
+    "A41.9": ["Antibiotics", "IV fluids", "Blood cultures", "Lactate monitoring"],
+    "J96.0": ["Oxygen", "Airway management", "IV access", "Monitoring"]
+}
 
 # =========================
 # CLINICALLY-ACCEPTED SCORING ENGINE
@@ -254,7 +288,7 @@ def calculate_qsofa(rr, sbp, avpu):
     return score
 
 
-def calculate_news2(age, rr, spo2, sbp, hr, temp_c, avpu, on_oxygen=False, spo2_scale2=False):
+def calculate_news2(rr, spo2, sbp, hr, temp_c, avpu, on_oxygen=False, spo2_scale2=False):
     """
     NEWS2 for adults (>=16 yrs). Uses RCP standard bands.
     For MVP: default Scale 1 SpO2 unless spo2_scale2=True.
@@ -342,30 +376,129 @@ def calculate_pews_placeholder(age, rr, spo2, sbp, hr, avpu):
     if str(avpu).upper() != "A": score += 2
     return min(score, 6)
 
+def calculate_meows_demo(rr, spo2, sbp, hr, temp_c, avpu, on_oxygen=False):
+    """
+    Simplified MEOWS/MEWS DEMO trigger logic for obstetric cases.
+    Uses parameters available in MVP: RR, SpO2, SBP, HR, Temp, AVPU.
+    
+    Returns:
+        triage_color (RED/YELLOW/GREEN),
+        details dict with trigger breakdown
+    
+    NOTE: Thresholds are standard MEOWS-style ranges for demo.
+    Please replace with your hospital's official MEOWS chart later.
+    """
+
+    def classify_rr(x):
+        if x < 10 or x > 30: return "red"
+        if 21 <= x <= 30 or 10 <= x <= 11: return "amber"
+        return "green"
+
+    def classify_spo2(x):
+        # Many MEOWS charts trigger at SpO2 <95.
+        # For demo: amber 93–94, red <93
+        if x < 93: return "red"
+        if 93 <= x <= 94: return "amber"
+        return "green"
+
+    def classify_sbp(x):
+        if x < 90 or x >= 160: return "red"
+        if 90 <= x <= 99 or 150 <= x <= 159: return "amber"
+        return "green"
+
+    def classify_hr(x):
+        if x < 40 or x > 120: return "red"
+        if 100 <= x <= 120 or 40 <= x <= 49: return "amber"
+        return "green"
+
+    def classify_temp(x):
+        if x < 35.0 or x >= 38.0: return "red"
+        if 35.0 <= x <= 35.9 or 37.5 <= x <= 37.9: return "amber"
+        return "green"
+
+    def classify_avpu(x):
+        x = (x or "A").upper()
+        if x in ["P", "U"]: return "red"
+        if x == "V": return "amber"
+        return "green"
+
+    parts = {
+        "rr": classify_rr(rr),
+        "spo2": classify_spo2(spo2),
+        "sbp": classify_sbp(sbp),
+        "hr": classify_hr(hr),
+        "temp": classify_temp(temp_c),
+        "conc": classify_avpu(avpu),
+    }
+
+    red_triggers = sum(1 for v in parts.values() if v == "red")
+    amber_triggers = sum(1 for v in parts.values() if v == "amber")
+
+    # Standard MEOWS escalation logic:
+    # ≥1 red OR ≥2 amber → emergency response (RED)
+    # 1 amber → urgent review (YELLOW)
+    # else → routine (GREEN)
+    if red_triggers >= 1 or amber_triggers >= 2:
+        triage = "RED"
+    elif amber_triggers == 1:
+        triage = "YELLOW"
+    else:
+        triage = "GREEN"
+
+    return triage, {
+        "system": "MEOWS (demo)",
+        "red_triggers": red_triggers,
+        "amber_triggers": amber_triggers,
+        "parts": parts,
+        "notes": "Demo MEOWS. Replace thresholds with your hospital MEOWS/MEWS chart."
+    }
+
 
 def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
     """
-    Returns:
-      triage_color, explanation_dict
-    """
-    vitals = case["vitals"]
-    age = float(case["patient_age"])
-    rr = float(vitals["rr"])
-    spo2 = float(vitals["spo2"])
-    sbp = float(vitals["sbp"])
-    hr = float(vitals["hr"])
-    temp_c = float(vitals["temp"])
-    avpu = vitals.get("avpu", "A")
+    Deterministic triage using:
+      - MEOWS/MEWS demo for Maternal cases
+      - PEWS placeholder for pediatric (<16)
+      - NEWS2 + qSOFA for other adults (>=16)
 
+    Returns:
+      triage_color (RED/YELLOW/GREEN),
+      explanation_dict
+    """
+    vitals = case.get("vitals", {}) or {}
+
+    age = float(case.get("patient_age", 0) or 0)
+    rr = float(vitals.get("rr", 0) or 0)
+    spo2 = float(vitals.get("spo2", 0) or 0)
+    sbp = float(vitals.get("sbp", 0) or 0)
+    hr = float(vitals.get("hr", 0) or 0)
+    temp_c = float(vitals.get("temp", 36.5) or 36.5)
+    avpu = vitals.get("avpu", "A") or "A"
+
+    case_type = case.get("case_type", "")
+
+    # -------------------------
+    # Maternal pathway (MEOWS/MEWS)
+    # -------------------------
+    if case_type == "Maternal":
+        triage, details = calculate_meows_demo(
+            rr=rr, spo2=spo2, sbp=sbp, hr=hr, temp_c=temp_c, avpu=avpu,
+            on_oxygen=on_oxygen
+        )
+        return triage, details
+
+    # -------------------------
+    # Pediatric pathway (<16)
+    # -------------------------
     if age < 16:
         pews = calculate_pews_placeholder(age, rr, spo2, sbp, hr, avpu)
-        # simple mapping
         if pews >= 4:
             triage = "RED"
         elif pews >= 2:
             triage = "YELLOW"
         else:
             triage = "GREEN"
+
         return triage, {
             "system": "PEWS (placeholder)",
             "score": pews,
@@ -373,16 +506,22 @@ def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
             "notes": "Replace placeholder with hospital PEWS chart later."
         }
 
-    # Adults (>=16)
+    # -------------------------
+    # Other adults (NEWS2 + qSOFA)
+    # -------------------------
     news2_total, news2_parts = calculate_news2(
-        age, rr, spo2, sbp, hr, temp_c, avpu,
+        rr=rr,
+        spo2=spo2,
+        sbp=sbp,
+        hr=hr,
+        temp_c=temp_c,
+        avpu=avpu,
         on_oxygen=on_oxygen,
         spo2_scale2=spo2_scale2
     )
-    qsofa = calculate_qsofa(rr, sbp, avpu)
 
-    # NEWS2 escalation thresholds:
-    # 0-4 low risk, 5-6 urgent, >=7 emergency
+    qsofa = calculate_qsofa(rr=rr, sbp=sbp, avpu=avpu)
+
     if news2_total >= 7:
         triage = "RED"
     elif news2_total >= 5:
@@ -390,7 +529,6 @@ def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
     else:
         triage = "GREEN"
 
-    # Upgrade one level if qSOFA >=2
     if qsofa >= 2:
         if triage == "GREEN":
             triage = "YELLOW"
@@ -414,6 +552,7 @@ def generate_premium_synthetic_data(days_back=30):
         {"name": "Specialty South Medical", "type": "Specialty", "lat": 25.565, "lon": 91.901, "beds": 150},
         {"name": "Trauma East Center", "type": "Trauma", "lat": 25.572, "lon": 91.885, "beds": 300},
     ]
+
     case_types = ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"]
 
     referred_cases, received_cases = [], []
@@ -421,31 +560,121 @@ def generate_premium_synthetic_data(days_back=30):
 
     for day in range(days_back):
         daily_cases = random.randint(3, 8)
+
         for case_num in range(daily_cases):
-            case_time = base_time + timedelta(days=day, hours=random.randint(0, 23), minutes=random.randint(0, 59))
+            case_time = base_time + timedelta(
+                days=day,
+                hours=random.randint(0, 23),
+                minutes=random.randint(0, 59)
+            )
             case_type = random.choice(case_types)
             age = random.randint(18, 80) if case_type != "Maternal" else random.randint(18, 40)
 
+            # ---------- VITALS ----------
             if case_type == "Maternal":
-                vitals = {"hr": random.randint(90, 140), "sbp": random.randint(80, 160), "rr": random.randint(18, 30),
-                          "temp": round(random.uniform(36.5, 38.5), 1), "spo2": random.randint(92, 99), "avpu": "A"}
+                vitals = {
+                    "hr": random.randint(90, 140),
+                    "sbp": random.randint(80, 160),
+                    "rr": random.randint(18, 30),
+                    "temp": round(random.uniform(36.5, 38.5), 1),
+                    "spo2": random.randint(92, 99),
+                    "avpu": "A"
+                }
             elif case_type == "Trauma":
-                vitals = {"hr": random.randint(70, 150), "sbp": random.randint(70, 180), "rr": random.randint(16, 35),
-                          "temp": round(random.uniform(36.0, 38.0), 1), "spo2": random.randint(88, 98),
-                          "avpu": random.choices(["A", "V", "P"], weights=[0.7, 0.2, 0.1])[0]}
+                vitals = {
+                    "hr": random.randint(70, 150),
+                    "sbp": random.randint(70, 180),
+                    "rr": random.randint(16, 35),
+                    "temp": round(random.uniform(36.0, 38.0), 1),
+                    "spo2": random.randint(88, 98),
+                    "avpu": random.choices(["A", "V", "P"], weights=[0.7, 0.2, 0.1])[0]
+                }
             else:
-                vitals = {"hr": random.randint(80, 140), "sbp": random.randint(90, 150), "rr": random.randint(18, 32),
-                          "temp": round(random.uniform(36.5, 39.0), 1), "spo2": random.randint(86, 95),
-                          "avpu": random.choices(["A", "V"], weights=[0.8, 0.2])[0]}
+                vitals = {
+                    "hr": random.randint(80, 140),
+                    "sbp": random.randint(90, 150),
+                    "rr": random.randint(18, 32),
+                    "temp": round(random.uniform(36.5, 39.0), 1),
+                    "spo2": random.randint(86, 95),
+                    "avpu": random.choices(["A", "V"], weights=[0.8, 0.2])[0]
+                }
 
-            matching_icd = [icd for icd in ICD_CATALOG if icd["case_type"] == case_type and icd["age_min"] <= age <= icd["age_max"]]
-            icd = random.choice(matching_icd) if matching_icd else random.choice([i for i in ICD_CATALOG if i["case_type"] == case_type])
+            # ---------- ICD SELECTION ----------
+            matching_icd = [
+                icd for icd in ICD_CATALOG
+                if icd["case_type"] == case_type and icd["age_min"] <= age <= icd["age_max"]
+            ]
+            icd = random.choice(matching_icd) if matching_icd else random.choice(
+                [i for i in ICD_CATALOG if i["case_type"] == case_type]
+            )
 
-            interventions = random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(2, 4))
-            referring_facility = random.choice(["PHC Mawlai", "CHC Smit", "CHC Pynursla", "Rural Health Center"])
-            receiving_facility = random.choice(facilities)
-            emt_crew = random.choice(EMT_CREW)
+            # ---------- REFERRAL REASON (PER CASE) ----------
+            reason_category = random.choices(
+                ["ICU_BED_UNAVAILABLE", "SPECIALTY_REQUIRED", "EQUIPMENT_REQUIRED"],
+                weights=[0.35, 0.45, 0.20]
+            )[0]
+
+            if reason_category == "ICU_BED_UNAVAILABLE":
+                reason_detail = random.choice(REFERRAL_REASONS["ICU_BED_UNAVAILABLE"])
+            elif reason_category == "SPECIALTY_REQUIRED":
+                reason_detail = random.choice(REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type])
+            else:
+                reason_detail = random.choice(REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type])
+
+            # ---------- TRANSPORT + STATUS ----------
             transport_time = random.randint(20, 90)
+            is_active_transfer = random.random() < 0.15
+            eta_minutes = transport_time if is_active_transfer else 0
+
+            # Transit vitals updates + EMT notes
+            transit_updates = []
+            if is_active_transfer:
+                n_updates = random.randint(2, 4)
+                for u in range(n_updates):
+                    upd_time = case_time + timedelta(
+                        minutes=(u + 1) * transport_time / (n_updates + 1)
+                    )
+                    upd_vitals = {
+                        "hr": max(40, vitals["hr"] + random.randint(-8, 8)),
+                        "sbp": max(60, vitals["sbp"] + random.randint(-10, 10)),
+                        "rr": max(8, vitals["rr"] + random.randint(-3, 3)),
+                        "spo2": min(100, max(80, vitals["spo2"] + random.randint(-2, 2))),
+                        "temp": round(vitals["temp"] + random.uniform(-0.2, 0.2), 1),
+                        "avpu": vitals["avpu"]
+                    }
+                    transit_updates.append({
+                        "timestamp": upd_time,
+                        "vitals": upd_vitals,
+                        "emt_note": random.choice([
+                            "Airway patent, oxygen continued",
+                            "IV line secured, monitoring ongoing",
+                            "BP stabilized after fluids",
+                            "Pain controlled, immobilization maintained"
+                        ])
+                    })
+
+            # ---------- INTERVENTIONS (ICD-SPECIFIC) ----------
+            base_intv = ICD_INTERVENTION_MAP.get(
+                icd["icd_code"],
+                INTERVENTION_PROTOCOLS[case_type]
+            )
+            interventions = random.sample(
+                base_intv,
+                min(len(base_intv), random.randint(2, 4))
+            )
+
+            # ---------- OUTBOUND / INBOUND DIRECTIONS ----------
+            # Outbound: from dashboard hospital to other centers
+            referring_facility_out = DASHBOARD_HOSPITAL
+            receiving_facility_out = random.choice(facilities)["name"]
+
+            # Inbound: to dashboard hospital from variable centers
+            referring_facility_in = random.choice([
+                "PHC Mawlai", "CHC Smit", "CHC Pynursla", "Rural Health Center"
+            ])
+            receiving_facility_in = DASHBOARD_HOSPITAL
+
+            emt_crew = random.choice(EMT_CREW)
 
             case_id_ref = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
             case_id_rec = f"REC_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
@@ -453,8 +682,8 @@ def generate_premium_synthetic_data(days_back=30):
             referred_case = {
                 "case_id": case_id_ref,
                 "timestamp": case_time,
-                "referring_facility": referring_facility,
-                "receiving_facility": receiving_facility["name"],
+                "referring_facility": referring_facility_out,
+                "receiving_facility": receiving_facility_out,
                 "patient_age": age,
                 "patient_sex": "F" if case_type == "Maternal" else random.choice(["M", "F"]),
                 "case_type": case_type,
@@ -464,16 +693,26 @@ def generate_premium_synthetic_data(days_back=30):
                 "vitals": vitals,
                 "interventions_referring": interventions,
                 "status": random.choices(["Accepted", "Rejected", "Pending"], weights=[0.8, 0.1, 0.1])[0],
+                "referral_reason_category": reason_category,
+                "referral_reason_detail": reason_detail,
+                "is_active_transfer": is_active_transfer,
+                "eta_minutes": eta_minutes,
+                "transit_updates": transit_updates,
                 "clinical_notes": f"Patient presented with {case_type.lower()} symptoms requiring specialist care"
             }
 
             received_case = {
                 **referred_case,
                 "case_id": case_id_rec,
+                "referring_facility": referring_facility_in,
+                "receiving_facility": receiving_facility_in,
                 "transport_time_minutes": transport_time,
                 "emt_crew": emt_crew,
                 "vehicle_id": emt_crew["vehicle"],
-                "interventions_receiving": interventions + random.sample(INTERVENTION_PROTOCOLS[case_type], random.randint(1, 3)),
+                "interventions_receiving": interventions + random.sample(
+                    INTERVENTION_PROTOCOLS[case_type],
+                    random.randint(1, 3)
+                ),
                 "final_outcome": random.choices(["Excellent", "Good", "Fair", "Poor"], weights=[0.4, 0.3, 0.2, 0.1])[0],
                 "length_of_stay_hours": random.randint(24, 240),
                 "discharge_date": case_time + timedelta(hours=random.randint(24, 240))
@@ -484,6 +723,7 @@ def generate_premium_synthetic_data(days_back=30):
 
     ref_df = pd.DataFrame(referred_cases)
     rec_df = pd.DataFrame(received_cases)
+
     ref_df["timestamp"] = pd.to_datetime(ref_df["timestamp"])
     rec_df["timestamp"] = pd.to_datetime(rec_df["timestamp"])
 
@@ -493,7 +733,6 @@ def generate_premium_synthetic_data(days_back=30):
         "facilities": facilities,
         "emt_crews": EMT_CREW
     }
-
 
 # =========================
 # SESSION STATE
@@ -735,6 +974,9 @@ def safe_ai_predict(model, features):
 def render_case_details(case, case_type):
     col1, col2 = st.columns([1, 1])
 
+    # -------------------------
+    # LEFT: Patient + Referral + Transit
+    # -------------------------
     with col1:
         st.markdown("#### Patient Information")
         st.write(f"**Case ID:** {case['case_id']}")
@@ -750,6 +992,40 @@ def render_case_details(case, case_type):
         st.write(f"**RR:** {vitals['rr']} rpm | **SpO₂:** {vitals['spo2']}%")
         st.write(f"**Temp:** {vitals['temp']}°C | **AVPU:** {vitals['avpu']}")
 
+        st.markdown("#### Referral Reason")
+        st.write(f"**Category:** {case.get('referral_reason_category','-')}")
+        st.write(f"**Detail:** {case.get('referral_reason_detail','-')}")
+
+        if case.get("is_active_transfer"):
+            st.warning(f"🚑 Active Transfer • ETA: {case.get('eta_minutes')} mins")
+
+            st.markdown("#### In-Transit Monitoring")
+            updates = case.get("transit_updates", [])
+            for upd in updates:
+                ts = upd.get("timestamp")
+                ts_str = ts.strftime("%H:%M") if hasattr(ts, "strftime") else str(ts)
+
+                uv = upd.get("vitals", {})
+                st.write(
+                    f"**{ts_str}**  "
+                    f"HR {uv.get('hr','-')} | SBP {uv.get('sbp','-')} | "
+                    f"RR {uv.get('rr','-')} | SpO₂ {uv.get('spo2','-')}%"
+                )
+                st.caption(f"EMT note: {upd.get('emt_note','-')}")
+
+        else:
+            st.markdown("#### Transfer Summary (Completed)")
+            if case.get("transit_updates"):
+                last = case["transit_updates"][-1]
+                lv = last.get("vitals", {})
+                st.write(
+                    "Last in-transit vitals:",
+                    f"HR {lv.get('hr','-')}, SBP {lv.get('sbp','-')}, SpO₂ {lv.get('spo2','-')}%"
+                )
+
+    # -------------------------
+    # RIGHT: Interventions + Receiving details
+    # -------------------------
     with col2:
         st.markdown("#### Timeline & Interventions")
         st.markdown("**Referring Interventions:**")
@@ -775,7 +1051,7 @@ def render_case_details(case, case_type):
             st.write(f"**Length of Stay:** {case['length_of_stay_hours']} hours")
 
     # =========================
-    # AI / SCORE-BASED TRIAGE PANEL
+    # SCORE-BASED TRIAGE PANEL
     # =========================
     st.markdown("#### 🧠 Clinical Triage Recommendation (Score-Based)")
     st.caption("Uses NEWS2 + qSOFA for adults, PEWS for paediatrics. Deterministic and clinically accepted.")
@@ -789,7 +1065,7 @@ def render_case_details(case, case_type):
     temp_c = float(vitals["temp"])
     avpu = vitals.get("avpu", "A")
 
-    # Optional oxygen input for NEWS2 (FIXED INDENTATION + UNIQUE KEYS)
+    # Optional oxygen input for NEWS2 (unique keys)
     oxy_key = get_unique_key("oxy", case_type, case)
     spo2s2_key = get_unique_key("spo2s2", case_type, case)
 
@@ -807,7 +1083,7 @@ def render_case_details(case, case_type):
             key=spo2s2_key
         )
 
-    # Show inputs
+    # Show input metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("Age", f"{int(age)} yrs")
     c1.metric("SBP", f"{sbp} mmHg")
@@ -823,13 +1099,13 @@ def render_case_details(case, case_type):
         spo2_scale2=spo2_scale2
     )
 
-    # Store for feedback (so feedback UI appears)
+    # Store for feedback
     last_pred_key = get_unique_key("ai_last_pred", case_type, case)
     last_feat_key = get_unique_key("ai_last_features", case_type, case)
     st.session_state[last_pred_key] = triage_color
     st.session_state[last_feat_key] = [age, sbp, spo2, hr]
 
-    # Display result
+    # Display triage result
     color_map = {"RED": "#ff4444", "YELLOW": "#ffaa00", "GREEN": "#00c853"}
     triage_hex = color_map[triage_color]
 
@@ -850,7 +1126,8 @@ def render_case_details(case, case_type):
 
     if details.get("system") == "NEWS2 + qSOFA":
         st.write(
-            f"**NEWS2 Total:** {details['news2_total']}  (RR:{details['news2_parts']['rr']}, "
+            f"**NEWS2 Total:** {details['news2_total']} "
+            f"(RR:{details['news2_parts']['rr']}, "
             f"SpO₂:{details['news2_parts']['spo2']}, O₂:{details['news2_parts']['oxygen']}, "
             f"SBP:{details['news2_parts']['sbp']}, HR:{details['news2_parts']['hr']}, "
             f"Temp:{details['news2_parts']['temp']}, AVPU:{details['news2_parts']['conc']})"
@@ -866,9 +1143,53 @@ def render_case_details(case, case_type):
     else:
         st.write(f"**PEWS Score (placeholder):** {details['score']}")
         st.caption(details.get("notes", ""))
+    # -------------------------
+    # MEOWS Breakdown Table (tiny UI add-on)
+    # -------------------------
+    if details.get("system", "").startswith("MEOWS"):
+        st.markdown("##### MEOWS Trigger Breakdown")
+
+        parts = details.get("parts", {})  # e.g., {"rr":"amber","spo2":"red",...}
+
+        if parts:
+            # Build a small table
+            meows_rows = []
+            label_map = {
+                "rr": "Respiratory Rate",
+                "spo2": "SpO₂",
+                "sbp": "Systolic BP",
+                "hr": "Heart Rate",
+                "temp": "Temperature",
+                "conc": "Consciousness (AVPU)"
+            }
+
+            for k, v in parts.items():
+                meows_rows.append({
+                    "Parameter": label_map.get(k, k.upper()),
+                    "Trigger Level": v.upper()
+                })
+
+            meows_df = pd.DataFrame(meows_rows)
+
+            # Optional: order rows nicely
+            order = [
+                "Respiratory Rate", "SpO₂", "Systolic BP",
+                "Heart Rate", "Temperature", "Consciousness (AVPU)"
+            ]
+            meows_df["Parameter"] = pd.Categorical(meows_df["Parameter"], categories=order, ordered=True)
+            meows_df = meows_df.sort_values("Parameter")
+
+            st.table(meows_df.reset_index(drop=True))
+
+            st.caption(
+                f"Red triggers: {details.get('red_triggers',0)} | "
+                f"Amber triggers: {details.get('amber_triggers',0)}"
+            )
+        else:
+            st.info("MEOWS parts not available for this case.")
 
     # =========================
-    # Optional ML Model Comparison
+    # OPTIONAL ML COMPARISON
     # =========================
     model = get_triage_model()
     if model is not None:
@@ -882,7 +1203,7 @@ def render_case_details(case, case_type):
             st.caption(f"ML model available but could not run here: {e}")
 
     # =========================
-    # Feedback UI
+    # FEEDBACK UI
     # =========================
     st.subheader("Was this recommendation helpful?")
     fb_radio_key = get_unique_key("ai_fb_radio", case_type, case)
@@ -1048,17 +1369,45 @@ def main():
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🏠 Dashboard",
-        "📤 Referred Cases",
-        "🏥 Received Cases",
+        "📤 Outbound Referrals & New Transfer",
+        "🏥 Inbound Transfers (Active + History)",
         "📊 Analytics",
         "🚑 EMT Tracking",
         "⚡ Quick Actions"
-    ])
+])
 
     with tab1:
         render_dashboard_overview()
     with tab2:
-        render_interactive_case_list("referred")
+        sub_a, sub_b = st.tabs(["➕ Create New Referral", "📜 Outbound Referral Queue"])
+        with sub_a:
+            render_new_referral_form()
+        with sub_b:
+            render_interactive_case_list("referred")   
+        def render_new_referral_form():
+            st.markdown("### ➕ Create Emergency / Routine Referral")
+            with st.form("new_ref_form", clear_on_submit=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    patient_age = st.number_input("Age", 0, 120, 40)
+                    patient_sex = st.selectbox("Sex", ["M", "F"])
+                    case_type = st.selectbox("Case Type", list(INTERVENTION_PROTOCOLS.keys()))
+                    triage_color = st.selectbox("Triage", ["RED", "YELLOW", "GREEN"])
+                with c2:
+                    receiving_facility = st.selectbox(
+                        "Refer To",
+                        [f["name"] for f in st.session_state.premium_data["facilities"]]
+            )
+                    reason_category = st.selectbox(
+                        "Referral Reason Category",
+                        ["ICU_BED_UNAVAILABLE", "SPECIALTY_REQUIRED", "EQUIPMENT_REQUIRED"]
+            )
+                    reason_detail = st.text_area("Referral Reason Detail")
+
+                submit = st.form_submit_button("Create Referral")
+                if submit:
+                    st.success("Referral created (MVP demo). In production, this posts to referral API.")
+   
     with tab3:
         render_interactive_case_list("received")
     with tab4:
