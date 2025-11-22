@@ -420,36 +420,37 @@ def calculate_pews_placeholder(age, rr, spo2, sbp, hr, avpu):
     return score
 
 
-def calculate_meows(rr, spo2, sbp, hr, temp_c, avpu):
-    triggers = {}
-    if rr < 10 or rr > 30: triggers["RR"] = "RED"
-    elif 21 <= rr <= 30 or 10 <= rr <= 11: triggers["RR"] = "AMBER"
-    else: triggers["RR"] = "GREEN"
+# -------------------------
+# Maternal pathway (PRIMARY = MEOWS, SECONDARY = NEWS2 + qSOFA)
+# -------------------------
+if case.get("case_type") == "Maternal" and age >= 16:
+    meows_triage, meows_triggers, meows_total = calculate_meows(
+        rr=rr, spo2=spo2, sbp=sbp, hr=hr, temp_c=temp_c, avpu=avpu
+    )
 
-    if spo2 < 90: triggers["SpO2"] = "RED"
-    elif spo2 < 94: triggers["SpO2"] = "AMBER"
-    else: triggers["SpO2"] = "GREEN"
+    # Secondary adult comparator
+    news2_total, news2_parts = calculate_news2(
+        rr=rr,
+        spo2=spo2,
+        sbp=sbp,
+        hr=hr,
+        temp_c=temp_c,
+        avpu=avpu,
+        on_oxygen=on_oxygen,
+        spo2_scale2=spo2_scale2
+    )
+    qsofa = calculate_qsofa(rr=rr, sbp=sbp, avpu=avpu)
 
-    if sbp < 90 or sbp >= 160: triggers["SBP"] = "RED"
-    elif 90 <= sbp < 100 or 150 <= sbp < 160: triggers["SBP"] = "AMBER"
-    else: triggers["SBP"] = "GREEN"
+    return meows_triage, {
+        "system": "MEOWS (primary) + NEWS2/qSOFA (secondary)",
+        "meows_total": meows_total,
+        "meows_triggers": meows_triggers,
+        "secondary_news2_total": news2_total,
+        "secondary_news2_parts": news2_parts,
+        "secondary_qsofa": qsofa,
+        "notes": "Maternal triage uses MEOWS as primary. NEWS2/qSOFA shown only for comparison."
+    }
 
-    if hr < 50 or hr >= 130: triggers["HR"] = "RED"
-    elif 50 <= hr < 60 or 110 <= hr < 130: triggers["HR"] = "AMBER"
-    else: triggers["HR"] = "GREEN"
-
-    if temp_c < 35.0 or temp_c >= 38.5: triggers["Temp"] = "RED"
-    elif 37.5 <= temp_c < 38.5 or 35.0 <= temp_c < 36.0: triggers["Temp"] = "AMBER"
-    else: triggers["Temp"] = "GREEN"
-
-    triggers["AVPU"] = "RED" if avpu != "A" else "GREEN"
-
-    reds = sum(1 for v in triggers.values() if v == "RED")
-    ambers = sum(1 for v in triggers.values() if v == "AMBER")
-    if reds >= 1: overall = "RED"
-    elif ambers >= 1: overall = "YELLOW"
-    else: overall = "GREEN"
-    return overall, triggers
 
 
 def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
@@ -888,24 +889,43 @@ def render_case_details(case, case_type):
     </div>
     """, unsafe_allow_html=True)
 
-    if details.get("system")=="NEWS2 + qSOFA":
+    system = details.get("system", "")
+
+    if system.startswith("NEWS2"):
         st.write(
             f"**NEWS2 Total:** {details['news2_total']}  (RR:{details['news2_parts']['rr']}, "
             f"SpO₂:{details['news2_parts']['spo2']}, O₂:{details['news2_parts']['oxygen']}, "
             f"SBP:{details['news2_parts']['sbp']}, HR:{details['news2_parts']['hr']}, "
             f"Temp:{details['news2_parts']['temp']}, AVPU:{details['news2_parts']['conc']})"
-        )
-        st.write(f"**qSOFA:** {details['qsofa']}")
-    elif details.get("system","").startswith("MEOWS"):
+    )
+        st.write(f"**qSOFA:** {details['qsofa']} (≥2 upgrades risk)")
+
+    elif system.startswith("MEOWS"):
+        st.markdown("**MEOWS Breakdown (Primary Maternal Score)**")
         triggers = details.get("meows_triggers", {})
-        rows = [{"Parameter":k, "Trigger":v} for k,v in triggers.items()]
-        st.markdown("**MEOWS Trigger Breakdown**")
-        if rows:
-            st.table(pd.DataFrame(rows))
-        st.caption("Any RED trigger => RED triage. One or more AMBER triggers => YELLOW. Else GREEN.")
+        meows_rows = [{"Parameter": k, "Trigger": v} for k, v in triggers.items()]
+        st.table(pd.DataFrame(meows_rows))
+        st.write(f"**MEOWS Total:** {details.get('meows_total', '-')}")
+        st.caption(details.get("notes", ""))
+
+        # Secondary NEWS2/qSOFA comparator
+        with st.expander("See Secondary Adult Comparator (NEWS2 + qSOFA)"):
+            st.write(f"**NEWS2 Total:** {details.get('secondary_news2_total', '-')}")
+            parts = details.get("secondary_news2_parts", {})
+            if parts:
+                st.write(
+                    f"(RR:{parts.get('rr')}, SpO₂:{parts.get('spo2')}, O₂:{parts.get('oxygen')}, "
+                    f"SBP:{parts.get('sbp')}, HR:{parts.get('hr')}, Temp:{parts.get('temp')}, "
+                    f"AVPU:{parts.get('conc')})"
+            )
+            st.write(f"**qSOFA:** {details.get('secondary_qsofa', '-')}")
+            st.caption("Comparator only; not used to drive maternal triage.")
+
     else:
-        st.write(f"**PEWS Score (placeholder):** {details.get('score')}")
-        st.caption(details.get("notes",""))
+        # Pediatric placeholder
+        st.write(f"**PEWS Score (placeholder):** {details.get('score', '-')}")
+        st.caption(details.get("notes", ""))
+
 
     model = get_triage_model()
     if model is not None:
