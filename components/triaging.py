@@ -1,6 +1,12 @@
 # components/triaging.py
 import streamlit as st
-from utils.helpers import validate_vitals, safe_calc_NEWS2, calc_qSOFA, calc_MEOWS, calc_PEWS
+from components.helpers import (
+    validate_vitals,
+    safe_calc_NEWS2,
+    calc_qSOFA,
+    calc_MEOWS,
+    calc_PEWS
+)
 
 def triage_decision(vitals, context):
     """Enhanced triaging algorithm"""
