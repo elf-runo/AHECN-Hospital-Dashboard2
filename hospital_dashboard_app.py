@@ -491,9 +491,9 @@ def calculate_meows(rr, spo2, sbp, hr, temp_c, avpu):
 def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
     """
     Deterministic triage using:
-      - MEOWS (primary) + NEWS2/qSOFA (secondary comparator) for Maternal >=16
+      - MEOWS for all Maternal cases
       - PEWS placeholder for pediatric (<16)
-      - NEWS2 + qSOFA for other adults (>=16)
+      - NEWS2 + qSOFA for adults (>=16)
 
     Returns:
       triage_color (RED/YELLOW/GREEN),
@@ -508,43 +508,41 @@ def score_based_triage(case, on_oxygen=False, spo2_scale2=False):
     sbp = float(vitals.get("sbp", 0) or 0)
     hr = float(vitals.get("hr", 0) or 0)
     temp_c = float(vitals.get("temp", 36.5) or 36.5)
-    avpu = vitals.get("avpu", "A") or "A"
+    avpu = (vitals.get("avpu", "A") or "A").upper()
 
     # -------------------------
-# Maternal pathway (PRIMARY = MEOWS, SECONDARY = NEWS2 + qSOFA)
-# -------------------------
-if case.get("case_type") == "Maternal":
-    # Primary maternal triage
-    meows_triage, meows_triggers, meows_total = calculate_meows(
-        rr=rr, spo2=spo2, sbp=sbp, hr=hr, temp_c=temp_c, avpu=avpu
-    )
+    # Maternal pathway (PRIMARY = MEOWS, SECONDARY = NEWS2 + qSOFA)
+    # -------------------------
+    if case.get("case_type") == "Maternal":
+        meows_triage, meows_triggers, meows_total = calculate_meows(
+            rr=rr, spo2=spo2, sbp=sbp, hr=hr, temp_c=temp_c, avpu=avpu
+        )
 
-    # Secondary adult comparator (NOT used for maternal decision)
-    news2_total, news2_parts = calculate_news2(
-        rr=rr,
-        spo2=spo2,
-        sbp=sbp,
-        hr=hr,
-        temp_c=temp_c,
-        avpu=avpu,
-        on_oxygen=on_oxygen,
-        spo2_scale2=spo2_scale2
-    )
-    qsofa = calculate_qsofa(rr=rr, sbp=sbp, avpu=avpu)
+        news2_total, news2_parts = calculate_news2(
+            rr=rr,
+            spo2=spo2,
+            sbp=sbp,
+            hr=hr,
+            temp_c=temp_c,
+            avpu=avpu,
+            on_oxygen=on_oxygen,
+            spo2_scale2=spo2_scale2
+        )
+        qsofa = calculate_qsofa(rr=rr, sbp=sbp, avpu=avpu)
 
-    return meows_triage, {
-        "system": "MEOWS",
-        "secondary_system": "NEWS2/qSOFA (comparison only)",
-        "meows_total": meows_total,
-        "meows_triggers": meows_triggers,
-        "secondary_news2_total": news2_total,
-        "secondary_news2_parts": news2_parts,
-        "secondary_qsofa": qsofa,
-        "notes": "Maternal triage uses MEOWS as primary. NEWS2/qSOFA shown only for comparison."
-    }
+        return meows_triage, {
+            "system": "MEOWS",
+            "secondary_system": "NEWS2/qSOFA (comparison only)",
+            "meows_total": meows_total,
+            "meows_triggers": meows_triggers,
+            "secondary_news2_total": news2_total,
+            "secondary_news2_parts": news2_parts,
+            "secondary_qsofa": qsofa,
+            "notes": "Maternal triage uses MEOWS as primary. NEWS2/qSOFA shown only for comparison."
+        }
 
     # -------------------------
-    # Pediatric pathway
+    # Pediatric pathway (<16)
     # -------------------------
     if age < 16:
         pews = calculate_pews_placeholder(age, rr, spo2, sbp, hr, avpu)
@@ -564,7 +562,7 @@ if case.get("case_type") == "Maternal":
         }
 
     # -------------------------
-    # Adult pathway (NEWS2 + qSOFA) for NON-maternal adults
+    # Adult pathway (NEWS2 + qSOFA)
     # -------------------------
     news2_total, news2_parts = calculate_news2(
         rr=rr,
@@ -586,7 +584,6 @@ if case.get("case_type") == "Maternal":
     else:
         triage = "GREEN"
 
-    # Upgrade one level if qSOFA >=2
     if qsofa >= 2:
         if triage == "GREEN":
             triage = "YELLOW"
@@ -599,6 +596,7 @@ if case.get("case_type") == "Maternal":
         "news2_parts": news2_parts,
         "qsofa": qsofa
     }
+
 
 
 def generate_premium_synthetic_data(days_back=30):
