@@ -1506,9 +1506,9 @@ with tab_cc:
         status_filter = st.multiselect(
             "Status filter",
             options=REFERRAL_STATE_FLOW,
-            default=["REQUESTED","ACKNOWLEDGED","ACCEPTED","DISPATCHED","ENROUTE"]
+            default=["REQUESTED", "ACKNOWLEDGED", "ACCEPTED", "DISPATCHED", "ENROUTE"],
             key="cc_status_filter"
-        )
+)
 
         cases = outbound if view_filter.startswith("Outbound") else inbound
         cases = [c for c in cases if c.get("status") in st.session_state.cc_status_filter]
