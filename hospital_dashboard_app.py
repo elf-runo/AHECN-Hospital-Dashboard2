@@ -1530,8 +1530,6 @@ with tab_cc:
                 with st.container():
                     clicked = st.button(label, key=f"case_btn_{view_filter}_{i}", use_container_width=True)
                 if clicked:
-
-                ):
                     st.session_state.selected_case = c["case_id"]
                     st.session_state.selected_bucket = "outbound" if view_filter.startswith("Outbound") else "inbound"
 
