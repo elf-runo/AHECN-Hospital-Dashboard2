@@ -1507,10 +1507,18 @@ with tab_cc:
             "Status filter",
             options=REFERRAL_STATE_FLOW,
             default=["REQUESTED","ACKNOWLEDGED","ACCEPTED","DISPATCHED","ENROUTE"]
+            key="cc_status_filter"
         )
 
         cases = outbound if view_filter.startswith("Outbound") else inbound
-        cases = [c for c in cases if c.get("status") in status_filter]
+        cases = [c for c in cases if c.get("status") in st.session_state.cc_status_filter]
+
+        # ✅ If selected case no longer matches filter, clear selection
+        if st.session_state.get("selected_case"):
+            valid_ids = {x["case_id"] for x in cases}
+            if st.session_state.selected_case not in valid_ids:
+                st.session_state.selected_case = None
+                st.session_state.selected_bucket = None
 
         if not cases:
             st.info("No cases match filter.")
@@ -1518,9 +1526,11 @@ with tab_cc:
             for i, c in enumerate(sorted(cases, key=lambda x: x["timestamp"], reverse=True)[:30]):
                 triage_preview, _ = triage_service.score_based_triage(c)
                 cls = "critical" if triage_preview == "RED" else "urgent" if triage_preview == "YELLOW" else "stable"
-                if st.button(
-                    f"{c['case_id']} • {c.get('case_type')} • {triage_preview} • {c.get('status')}",
-                    key=f"case_btn_{view_filter}_{i}"
+                label = f"{c['case_id']} • {c.get('case_type')} • {triage_preview} • {c.get('status')}"
+                with st.container():
+                    clicked = st.button(label, key=f"case_btn_{view_filter}_{i}", use_container_width=True)
+                if clicked:
+
                 ):
                     st.session_state.selected_case = c["case_id"]
                     st.session_state.selected_bucket = "outbound" if view_filter.startswith("Outbound") else "inbound"
@@ -1566,6 +1576,50 @@ with tab_cc:
             v = c.get("vitals", {})
             vit_df = pd.DataFrame([v])
             st.table(vit_df)
+
+            # ✅ Inbound rationale + referrer resuscitation
+            st.markdown("### Referral Rationale & Pre-transfer Resuscitation")
+
+            # 1) Why this receiving center was chosen / ranked
+            rank_table = c.get("facility_rank_table")
+            match_rationale = c.get("match_rationale")
+
+            # If not stored (synthetic inbound), compute on the fly
+            if (rank_table is None) and (match_rationale is None):
+                try:
+                    tmp_triage, _ = triage_service.score_based_triage(c)
+                    tmp_df, tmp_caps = match_service.match(
+                        c.get("case_type"), tmp_triage, c.get("reason_detail_map", {}), c.get("other_reason_notes","")
+        )
+                    rank_table = tmp_df.head(5).to_dict("records") if not tmp_df.empty else None
+                    if rank_table:
+                        top = rank_table[0]
+                        match_rationale = [
+                            f"Capability fit score {top.get('Capability Fit Score')}",
+                            f"ETA {top.get('ETA (min)')} min",
+                            f"Market bonus {top.get('Market Bonus')}",
+            ]
+                except Exception:
+                    pass
+
+            if match_rationale:
+                st.markdown("**Why this center / facility was auto-ranked:**")
+                for r in match_rationale:
+                    st.write(f"• {r}")
+            elif rank_table:
+                st.markdown("**Auto-rank snapshot:**")
+                st.dataframe(pd.DataFrame(rank_table), use_container_width=True)
+            else:
+                st.caption("No matching rationale stored for this case (demo synthetic inbound).")
+
+            # 2) Referrer interventions (spoke / referring hospital)
+            ref_steps = c.get("interventions_referring") or c.get("interventions") or []
+            if ref_steps:
+                st.markdown("**Referrer resuscitation already done:**")
+                st.write(" ".join([f"<span class='intervention-badge'>{s}</span>" for s in ref_steps]), unsafe_allow_html=True)
+            else:
+                st.caption("No referrer resuscitation steps recorded.")
+
 
             # Transport + Digital Twin
             st.markdown("### Transport & Pre-arrival Digital Twin")
@@ -1684,41 +1738,25 @@ with tab_cc:
                     1 if on_oxygen else 0, 1 if spo2_scale2 else 0
                 ]])
                 try:
-                    ml_pred = model.predict(vec)[0]
+                    expected_n = getattr(model, "n_features_in_", vec.shape[1])
+                    if vec.shape[1] != expected_n:
+                        st.error(
+                            f"Model expects {expected_n} features, but app is sending {vec.shape[1]}. "
+                            "Retrain or update feature map."
+                        )
+                    X = vec[:, :expected_n]
+                    ml_pred = model.predict(X)[0]
+
                     st.write(f"ML suggested triage: **{ml_pred}** (does NOT override rules)")
                     agree = "✅ Agree" if ml_pred == triage_color else "⚠️ Disagree"
                     st.write(f"Rules vs ML: {agree}")
-
+                    
                     fb_col1, fb_col2, fb_col3 = st.columns(3)
-                    with fb_col1:
-                        if st.button("Clinician agrees"):
-                            log_payload = dict(features_payload)
-                            log_payload["rules_triage"] = triage_color
-                            log_payload["ml_triage"] = ml_pred
-                            log_payload["feedback"] = "agree"
-                            data_service.log_ml_features(c["case_id"], log_payload)
-                            audit_service.log(st.session_state.user, st.session_state.role, c["case_id"], "ML_FEEDBACK", log_payload)
-                            st.success("Feedback logged.")
-                    with fb_col2:
-                        if st.button("Clinician disagrees"):
-                            log_payload = dict(features_payload)
-                            log_payload["rules_triage"] = triage_color
-                            log_payload["ml_triage"] = ml_pred
-                            log_payload["feedback"] = "disagree"
-                            data_service.log_ml_features(c["case_id"], log_payload)
-                            audit_service.log(st.session_state.user, st.session_state.role, c["case_id"], "ML_FEEDBACK", log_payload)
-                            st.success("Feedback logged.")
-                    with fb_col3:
-                        if st.button("Needs review"):
-                            log_payload = dict(features_payload)
-                            log_payload["rules_triage"] = triage_color
-                            log_payload["ml_triage"] = ml_pred
-                            log_payload["feedback"] = "review"
-                            data_service.log_ml_features(c["case_id"], log_payload)
-                            audit_service.log(st.session_state.user, st.session_state.role, c["case_id"], "ML_FEEDBACK", log_payload)
-                            st.success("Feedback logged.")
-                except Exception:
+                    ...
+                except Exception as e:
                     st.warning("ML prediction failed; check model interface.")
+                    st.caption(f"Error: {e}")
+
 
             # Optional override with rationale
             st.markdown("---")
@@ -1831,30 +1869,46 @@ with tab_new:
 
             clinical_notes = st.text_area("Clinical Notes / Why referral?")
 
-            st.markdown("### Reason(s) for Referral")
-            reason_checks = st.multiselect(
-                "Tick all applicable categories",
-                ["ICU_BED_UNAVAILABLE", "SPECIALTY_REQUIRED", "EQUIPMENT_REQUIRED"],
-                default=["SPECIALTY_REQUIRED"]
-            )
+            st.markdown("### Reason(s) for Referral (tick all applicable)")
+
+            REFERRAL_REASON_CATEGORIES = {
+                "Capacity / Bed / Unit constraint": REFERRAL_REASONS["ICU_BED_UNAVAILABLE"],
+                "Specialty consult / takeover": REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type],
+                "Equipment / Procedure capability": REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type],
+                "High-risk pathway / protocol need": [
+                    "Massive transfusion protocol",
+                    "Thrombolysis / thrombectomy pathway",
+                    "Damage-control surgery pathway",
+                    "Maternal critical pathway"
+    ],
+                "Logistics / safety": [
+                    "Need monitored transport",
+                    "Terrain / ETA risk",
+                    "No blood products in spoke",
+                    "No imaging after hours"
+    ],
+}
+
+            selected_cats = st.multiselect(
+                "Categories",
+                options=list(REFERRAL_REASON_CATEGORIES.keys()),
+                default=["Specialty consult / takeover"]
+)
 
             reason_detail_map = {}
-            if "ICU_BED_UNAVAILABLE" in reason_checks:
-                reason_detail_map["ICU_BED_UNAVAILABLE"] = st.multiselect(
-                    "ICU / bed related",
-                    REFERRAL_REASONS["ICU_BED_UNAVAILABLE"]
-                )
-            if "SPECIALTY_REQUIRED" in reason_checks:
-                reason_detail_map["SPECIALTY_REQUIRED"] = st.multiselect(
-                    "Specialty required",
-                    REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type]
-                )
-            if "EQUIPMENT_REQUIRED" in reason_checks:
-                reason_detail_map["EQUIPMENT_REQUIRED"] = st.multiselect(
-                    "Equipment required",
-                    REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type]
-                )
+            required_specialties = set()
+
+            for cat in selected_cats:
+                picks = st.multiselect(cat, REFERRAL_REASON_CATEGORIES[cat], key=f"reason_{cat}")
+                reason_detail_map[cat] = picks
+                if cat == "Specialty consult / takeover":
+                    required_specialties.update(picks)
+
+            st.markdown("**Specialty required (auto-derived):** " +
+                        (", ".join(sorted(required_specialties)) if required_specialties else "—"))
+
             other_reason_notes = st.text_area("Other referral notes (free text)")
+            reason_checks = selected_cats
 
             # Real-time triage preview
             tmp_case = {
@@ -1879,6 +1933,17 @@ with tab_new:
             st.caption(f"Required capabilities (derived): {required_caps if required_caps else 'none'}")
             st.dataframe(scored_df.reset_index(drop=True), use_container_width=True)
 
+            # ✅ Capture rationale for storage
+            facility_rank_table = scored_df.head(5).to_dict("records") if not scored_df.empty else []
+            match_rationale = []
+            if facility_rank_table:
+                top = facility_rank_table[0]
+                match_rationale = [
+                    f"Capability fit score {top.get('Capability Fit Score')}",
+                    f"ETA {top.get('ETA (min)')} min",
+                    f"Market bonus {top.get('Market Bonus')}",
+                    f"Type {top.get('Type')}"
+    ]
             top_facilities = scored_df["Facility"].tolist()
             receiving_facility = st.selectbox(
                 "Receiving Facility (auto-ranked)",
@@ -1921,6 +1986,10 @@ with tab_new:
                 "reason_detail_map": reason_detail_map,
                 "other_reason_notes": other_reason_notes,
                 "interventions": interventions,
+                "facility_rank_table": facility_rank_table,
+                "match_rationale": match_rationale,
+                "required_specialties": sorted(list(required_specialties)) if "required_specialties" in locals() else [],
+                "interventions_referring": interventions,  # spoke/resus steps in demo
                 "eta_minutes": eta_pick,
                 "requested_at": case_time,
                 "sla_minutes": 15,
