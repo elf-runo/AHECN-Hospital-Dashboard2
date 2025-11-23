@@ -1866,72 +1866,103 @@ with tab_new:
             with v6: avpu = st.selectbox("AVPU", ["A","V","P","U"])
 
             clinical_notes = st.text_area("Clinical Notes / Why referral?")
-
             st.markdown("### Reason(s) for Referral (tick all applicable)")
 
-            REFERRAL_REASON_CATEGORIES = {
-                "Capacity / Bed / Unit constraint": REFERRAL_REASONS["ICU_BED_UNAVAILABLE"],
-                "Specialty consult / takeover": REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type],
-                "Equipment / Procedure capability": REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type],
-                "High-risk pathway / protocol need": [
-                    "Massive transfusion protocol",
-                    "Thrombolysis / thrombectomy pathway",
-                    "Damage-control surgery pathway",
-                    "Maternal critical pathway"
+            # Expanded categories (3 hard + 2 soft for demo realism)
+            reason_checks = st.multiselect(
+                "Tick all applicable categories",
+    [
+                    "ICU_BED_UNAVAILABLE",
+                    "SPECIALTY_REQUIRED",
+                    "EQUIPMENT_REQUIRED",
+                    "HIGH_RISK_PATHWAY",
+                    "LOGISTICS_SAFETY",
     ],
-                "Logistics / safety": [
-                    "Need monitored transport",
-                    "Terrain / ETA risk",
-                    "No blood products in spoke",
-                    "No imaging after hours"
-    ],
-}
-
-            selected_cats = st.multiselect(
-                "Categories",
-                options=list(REFERRAL_REASON_CATEGORIES.keys()),
-                default=["Specialty consult / takeover"]
+                default=["SPECIALTY_REQUIRED"]
 )
 
             reason_detail_map = {}
             required_specialties = set()
 
-            for cat in selected_cats:
-                picks = st.multiselect(cat, REFERRAL_REASON_CATEGORIES[cat], key=f"reason_{cat}")
-                reason_detail_map[cat] = picks
-                if cat == "Specialty consult / takeover":
-                    required_specialties.update(picks)
+            # 1) ICU / capacity constraints
+            if "ICU_BED_UNAVAILABLE" in reason_checks:
+                reason_detail_map["ICU_BED_UNAVAILABLE"] = st.multiselect(
+                    "ICU / Bed related",
+                    REFERRAL_REASONS["ICU_BED_UNAVAILABLE"]
+    )
 
-            st.markdown("**Specialty required (auto-derived):** " +
-                        (", ".join(sorted(required_specialties)) if required_specialties else "—"))
+            # 2) Specialty constraints (also derive explicit specialty list)
+            if "SPECIALTY_REQUIRED" in reason_checks:
+                picks = st.multiselect(
+                    "Specialty required",
+                    REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type]
+    )
+                reason_detail_map["SPECIALTY_REQUIRED"] = picks
+                required_specialties.update(picks)
+
+            # 3) Equipment / procedure constraints
+            if "EQUIPMENT_REQUIRED" in reason_checks:
+                reason_detail_map["EQUIPMENT_REQUIRED"] = st.multiselect(
+                    "Equipment / Procedure required",
+                    REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type]
+    )
+
+            # 4) High-risk pathway (soft constraints for human/ops fit)
+            if "HIGH_RISK_PATHWAY" in reason_checks:
+                reason_detail_map["HIGH_RISK_PATHWAY"] = st.multiselect(
+                    "High-risk pathway / protocol need",
+        [
+                        "Massive transfusion protocol",
+                        "Thrombolysis / thrombectomy pathway",
+                        "Damage-control surgery pathway",
+                        "Maternal critical pathway",
+        ]
+    )
+
+            # 5) Logistics / safety (soft constraints)
+            if "LOGISTICS_SAFETY" in reason_checks:
+                reason_detail_map["LOGISTICS_SAFETY"] = st.multiselect(
+                    "Logistics / safety reasons",
+        [
+                        "Need monitored transport",
+                        "Terrain / ETA risk",
+                        "No blood products in spoke",
+                        "No imaging after hours",
+        ]
+    )
+
+            st.markdown(
+                "**Specialty required (auto-derived):** " +
+                (", ".join(sorted(required_specialties)) if required_specialties else "—")
+)
 
             other_reason_notes = st.text_area("Other referral notes (free text)")
-            reason_checks = selected_cats
 
             # Real-time triage preview
             tmp_case = {
                 "case_type": case_type,
                 "patient_age": patient_age,
                 "patient_sex": patient_sex,
-                "vitals": {"hr":hr,"sbp":sbp,"rr":rr,"spo2":spo2,"temp":temp_c,"avpu":avpu}
-            }
+                "vitals": {"hr": hr, "sbp": sbp, "rr": rr, "spo2": spo2, "temp": temp_c, "avpu": avpu}
+}
             on_oxygen = st.checkbox("On oxygen?", value=False)
             spo2_scale2 = st.checkbox("SpO₂ Scale 2 (COPD)?", value=False)
 
             triage_for_match, triage_details = triage_service.score_based_triage(
                 tmp_case, on_oxygen=on_oxygen, spo2_scale2=spo2_scale2, maternal_context=maternal_context
-            )
+)
             st.info(f"Triage preview: **{triage_for_match}** via {triage_details.get('system')}")
 
-            # Multi-constraint facility matching
+            # Multi-constraint facility matching (hard + soft)
             scored_df, required_caps = match_service.match(
                 case_type, triage_for_match, reason_detail_map, other_reason_notes
-            )
+)
+
             st.markdown("### Smart Receiving Facility Match (Auto-ranked)")
             st.caption(f"Required capabilities (derived): {required_caps if required_caps else 'none'}")
             st.dataframe(scored_df.reset_index(drop=True), use_container_width=True)
 
-            # ✅ Capture rationale for storage
+            # Capture rationale for storage (used later in Command Center)
             facility_rank_table = scored_df.head(5).to_dict("records") if not scored_df.empty else []
             match_rationale = []
             if facility_rank_table:
@@ -1940,14 +1971,19 @@ with tab_new:
                     f"Capability fit score {top.get('Capability Fit Score')}",
                     f"ETA {top.get('ETA (min)')} min",
                     f"Market bonus {top.get('Market Bonus')}",
-                    f"Type {top.get('Type')}"
+                    f"Type {top.get('Type')}",
     ]
-            top_facilities = scored_df["Facility"].tolist()
+
+            # Receiving facility selector
+            top_facilities = scored_df["Facility"].tolist() if not scored_df.empty else []
+            fallback_facilities = [f["name"] for f in registry if f["name"] != DASHBOARD_HOSPITAL]
+
             receiving_facility = st.selectbox(
                 "Receiving Facility (auto-ranked)",
-                options=top_facilities if top_facilities else [f["name"] for f in registry if f["name"]!=DASHBOARD_HOSPITAL],
+                options=top_facilities if top_facilities else fallback_facilities,
                 index=0
-            )
+)
+
 
             submitted = st.form_submit_button("🚀 Create Referral", type="primary")
 
