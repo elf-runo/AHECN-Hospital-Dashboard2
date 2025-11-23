@@ -1388,20 +1388,21 @@ USERS = {
 
 def login_sidebar():
     st.sidebar.markdown("### 🔐 Login (Demo RBAC)")
-    u = st.sidebar.text_input("Username")
-    p = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
+    u = st.sidebar.text_input("Username", key="login_username")
+    p = st.sidebar.text_input("Password", type="password", key="login_password")
+
+    if st.sidebar.button("Login", key="login_btn"):
         if u in USERS and USERS[u]["pwd"] == p:
             st.session_state.user = u
             st.session_state.role = USERS[u]["role"]
             st.sidebar.success(f"Logged in as {u} ({st.session_state.role})")
+            st.rerun()  # <-- CRITICAL: reruns script so gate opens
         else:
             st.sidebar.error("Invalid credentials")
 
 if "user" not in st.session_state or "role" not in st.session_state:
     login_sidebar()
     st.stop()
-
 
 # =============================================================================
 # INIT APP DATA
@@ -1508,7 +1509,8 @@ with tab_cc:
             options=REFERRAL_STATE_FLOW,
             default=["REQUESTED", "ACKNOWLEDGED", "ACCEPTED", "DISPATCHED", "ENROUTE"],
             key="cc_status_filter"
-)
+        )
+
 
         cases = outbound if view_filter.startswith("Outbound") else inbound
         cases = [c for c in cases if c.get("status") in st.session_state.cc_status_filter]
