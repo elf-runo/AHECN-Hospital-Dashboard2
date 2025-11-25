@@ -277,7 +277,6 @@ INTERVENTION_PROTOCOLS = {
         "Blood cultures", "Lactate monitoring",
         "Vasopressors if shock", "Oxygen", "Urine output monitoring"
     ],
-    ],
     "Pediatrics": [
         "Airway positioning / suction",
         "Oxygen / nebulization",
