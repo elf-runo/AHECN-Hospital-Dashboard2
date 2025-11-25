@@ -2093,238 +2093,392 @@ with tab_cc:
 with tab_new:
     st.markdown("## 🚀 Create New Outbound Referral")
 
-    if st.session_state.role not in ["REFERRER","COMMAND_CENTER"]:
+    if st.session_state.role not in ["REFERRER", "COMMAND_CENTER"]:
         st.warning("You don't have permission to create referrals.")
     else:
-        with st.form("new_ref_form"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                patient_name = st.text_input("Patient Name")
-                patient_age = st.number_input("Age", min_value=0, max_value=120, value=30)
-                patient_sex = st.selectbox("Sex", ["M","F"])
-            with c2:
-                # 1) Case type selector (give it an explicit key)
-                case_type = st.selectbox(
-                    "Case Type",
-                    CASE_TYPES,
-                    key="new_ref_case_type",
+        # ---------------------------
+        # Top row: Patient + Case
+        # ---------------------------
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            patient_name = st.text_input("Patient Name", key="new_ref_patient_name")
+            patient_age = st.number_input(
+                "Age",
+                min_value=0,
+                max_value=120,
+                value=30,
+                key="new_ref_age",
+            )
+            patient_sex = st.selectbox(
+                "Sex",
+                ["M", "F"],
+                key="new_ref_sex",
+            )
+
+        with c2:
+            # Case type OUTSIDE any form logic → drives everything dynamically
+            case_type = st.selectbox(
+                "Case Type",
+                CASE_TYPES,
+                key="new_ref_case_type",
+            )
+
+            # Filter ICDs strictly by the selected case type
+            icd_options = [
+                f"{i['icd_code']} — {i['label']}"
+                for i in ICD_CATALOG
+                if i["case_type"] == case_type
+            ]
+
+            if not icd_options:
+                st.error(
+                    f"No provisional ICDs configured for case type '{case_type}'. "
+                    "Check BASE_ICD_BY_TYPE / build_demo_icd_catalog()."
+                )
+                icd_choice = None
+            else:
+                # Single, stable key is fine – options list changes when case_type changes
+                icd_choice = st.selectbox(
+                    "Provisional ICD",
+                    icd_options,
+                    key="new_ref_icd",
                 )
 
-                # 2) Filter ICDs strictly by the selected case type
-                icd_options = [
-                    f"{i['icd_code']} — {i['label']}"
-                    for i in ICD_CATALOG
-                    if i["case_type"] == case_type
-                ]
+        with c3:
+            maternal_context = "Antenatal"
+            if case_type == "Maternal":
+                maternal_context = st.selectbox(
+                    "Maternal context",
+                    [
+                        "Antenatal",
+                        "Intrapartum",
+                        "Postpartum <24h",
+                        "Postpartum >24h",
+                        "Hemorrhage risk",
+                        "Eclampsia risk",
+                    ],
+                    key="new_ref_maternal_context",
+                )
 
-                # 3) Guard against mis-config (no ICDs for this type)
-                if not icd_options:
-                    st.error(f"No provisional ICDs configured for case type '{case_type}'. "
-                             "Check BASE_ICD_BY_TYPE / build_demo_icd_catalog().")
-                    icd_choice = None
-                else:
-                    # IMPORTANT: key depends on case_type so state is reset when you change type
-                    icd_choice = st.selectbox(
-                        "Provisional ICD",
-                        icd_options,
-                        key=f"new_ref_icd_{case_type}",
-                    )
+        # ---------------------------
+        # Vitals
+        # ---------------------------
+        st.markdown("### Vitals")
+        v1, v2, v3, v4, v5, v6 = st.columns(6)
+        with v1:
+            hr = st.number_input(
+                "HR", min_value=30, max_value=220, value=100, key="new_ref_hr"
+            )
+        with v2:
+            sbp = st.number_input(
+                "SBP", min_value=50, max_value=250, value=120, key="new_ref_sbp"
+            )
+        with v3:
+            rr = st.number_input(
+                "RR", min_value=6, max_value=60, value=20, key="new_ref_rr"
+            )
+        with v4:
+            spo2 = st.number_input(
+                "SpO₂", min_value=70, max_value=100, value=96, key="new_ref_spo2"
+            )
+        with v5:
+            temp_c = st.number_input(
+                "Temp (°C)",
+                min_value=32.0,
+                max_value=42.0,
+                value=37.0,
+                step=0.1,
+                key="new_ref_temp",
+            )
+        with v6:
+            avpu = st.selectbox(
+                "AVPU", ["A", "V", "P", "U"], key="new_ref_avpu"
+            )
 
+        clinical_notes = st.text_area(
+            "Clinical Notes / Why referral?",
+            key="new_ref_clinical_notes",
+        )
 
-            with c3:
-                maternal_context = "Antenatal"
-                if case_type == "Maternal":
-                    maternal_context = st.selectbox(
-                        "Maternal context",
-                        ["Antenatal","Intrapartum","Postpartum <24h","Postpartum >24h","Hemorrhage risk","Eclampsia risk"]
-                    )
+        # ---------------------------
+        # Reasons for referral
+        # ---------------------------
+        st.markdown("### Reason(s) for Referral (tick all applicable)")
 
-            st.markdown("### Vitals")
-            v1, v2, v3, v4, v5, v6 = st.columns(6)
-            with v1: hr = st.number_input("HR", min_value=30, max_value=220, value=100)
-            with v2: sbp = st.number_input("SBP", min_value=50, max_value=250, value=120)
-            with v3: rr = st.number_input("RR", min_value=6, max_value=60, value=20)
-            with v4: spo2 = st.number_input("SpO₂", min_value=70, max_value=100, value=96)
-            with v5: temp_c = st.number_input("Temp (°C)", min_value=32.0, max_value=42.0, value=37.0, step=0.1)
-            with v6: avpu = st.selectbox("AVPU", ["A","V","P","U"])
+        reason_checks = st.multiselect(
+            "Tick all applicable categories",
+            [
+                "ICU_BED_UNAVAILABLE",
+                "SPECIALTY_REQUIRED",
+                "EQUIPMENT_REQUIRED",
+                "HIGH_RISK_PATHWAY",
+                "LOGISTICS_SAFETY",
+            ],
+            default=["SPECIALTY_REQUIRED"],
+            key="new_ref_reason_checks",
+        )
 
-            clinical_notes = st.text_area("Clinical Notes / Why referral?")
-            st.markdown("### Reason(s) for Referral (tick all applicable)")
+        reason_detail_map = {}
+        required_specialties = set()
 
-            # Expanded categories (3 hard + 2 soft for demo realism)
-            reason_checks = st.multiselect(
-                "Tick all applicable categories",
-    [
-                    "ICU_BED_UNAVAILABLE",
-                    "SPECIALTY_REQUIRED",
-                    "EQUIPMENT_REQUIRED",
-                    "HIGH_RISK_PATHWAY",
-                    "LOGISTICS_SAFETY",
-    ],
-                default=["SPECIALTY_REQUIRED"]
-)
+        # 1) ICU / capacity constraints
+        if "ICU_BED_UNAVAILABLE" in reason_checks:
+            reason_detail_map["ICU_BED_UNAVAILABLE"] = st.multiselect(
+                "ICU / Bed related",
+                REFERRAL_REASONS["ICU_BED_UNAVAILABLE"],
+                key="new_ref_reason_icu",
+            )
 
-            reason_detail_map = {}
-            required_specialties = set()
+        # 2) Specialty constraints
+        if "SPECIALTY_REQUIRED" in reason_checks:
+            spec_key = f"new_ref_reason_spec_{case_type}"
+            spec_picks = st.multiselect(
+                "Specialty required",
+                REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type],
+                key=spec_key,
+            )
+            reason_detail_map["SPECIALTY_REQUIRED"] = spec_picks
+            required_specialties.update(spec_picks)
 
-            # 1) ICU / capacity constraints
-            if "ICU_BED_UNAVAILABLE" in reason_checks:
-                reason_detail_map["ICU_BED_UNAVAILABLE"] = st.multiselect(
-                    "ICU / Bed related",
-                    REFERRAL_REASONS["ICU_BED_UNAVAILABLE"]
-    )
+        # 3) Equipment / procedure constraints
+        if "EQUIPMENT_REQUIRED" in reason_checks:
+            eq_key = f"new_ref_reason_equipment_{case_type}"
+            reason_detail_map["EQUIPMENT_REQUIRED"] = st.multiselect(
+                "Equipment / Procedure required",
+                REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type],
+                key=eq_key,
+            )
 
-            # 2) Specialty constraints (also derive explicit specialty list)
-            if "SPECIALTY_REQUIRED" in reason_checks:
-                picks = st.multiselect(
-                    "Specialty required",
-                    REFERRAL_REASONS["SPECIALTY_REQUIRED"][case_type]
-    )
-                reason_detail_map["SPECIALTY_REQUIRED"] = picks
-                required_specialties.update(picks)
+        # 4) High-risk pathway (soft)
+        if "HIGH_RISK_PATHWAY" in reason_checks:
+            reason_detail_map["HIGH_RISK_PATHWAY"] = st.multiselect(
+                "High-risk pathway / protocol need",
+                [
+                    "Massive transfusion protocol",
+                    "Thrombolysis / thrombectomy pathway",
+                    "Damage-control surgery pathway",
+                    "Maternal critical pathway",
+                ],
+                key="new_ref_reason_highrisk",
+            )
 
-            # 3) Equipment / procedure constraints
-            if "EQUIPMENT_REQUIRED" in reason_checks:
-                reason_detail_map["EQUIPMENT_REQUIRED"] = st.multiselect(
-                    "Equipment / Procedure required",
-                    REFERRAL_REASONS["EQUIPMENT_REQUIRED"][case_type]
-    )
+        # 5) Logistics / safety (soft)
+        if "LOGISTICS_SAFETY" in reason_checks:
+            reason_detail_map["LOGISTICS_SAFETY"] = st.multiselect(
+                "Logistics / safety reasons",
+                [
+                    "Need monitored transport",
+                    "Terrain / ETA risk",
+                    "No blood products in spoke",
+                    "No imaging after hours",
+                ],
+                key="new_ref_reason_logistics",
+            )
 
-            # 4) High-risk pathway (soft constraints for human/ops fit)
-            if "HIGH_RISK_PATHWAY" in reason_checks:
-                reason_detail_map["HIGH_RISK_PATHWAY"] = st.multiselect(
-                    "High-risk pathway / protocol need",
-        [
-                        "Massive transfusion protocol",
-                        "Thrombolysis / thrombectomy pathway",
-                        "Damage-control surgery pathway",
-                        "Maternal critical pathway",
+        st.markdown(
+            "**Specialty required (auto-derived):** "
+            + (
+                ", ".join(sorted(required_specialties))
+                if required_specialties
+                else "—"
+            )
+        )
+
+        other_reason_notes = st.text_area(
+            "Other referral notes (free text)",
+            key="new_ref_other_notes",
+        )
+
+        # ---------------------------
+        # Real-time triage preview
+        # ---------------------------
+        tmp_case = {
+            "case_type": case_type,
+            "patient_age": patient_age,
+            "patient_sex": patient_sex,
+            "vitals": {
+                "hr": hr,
+                "sbp": sbp,
+                "rr": rr,
+                "spo2": spo2,
+                "temp": temp_c,
+                "avpu": avpu,
+            },
+        }
+        on_oxygen = st.checkbox(
+            "On oxygen?", value=False, key="new_ref_on_oxygen"
+        )
+        spo2_scale2 = st.checkbox(
+            "SpO₂ Scale 2 (COPD)?",
+            value=False,
+            key="new_ref_spo2_scale2",
+        )
+
+        triage_for_match, triage_details = triage_service.score_based_triage(
+            tmp_case,
+            on_oxygen=on_oxygen,
+            spo2_scale2=spo2_scale2,
+            maternal_context=maternal_context,
+        )
+        st.info(
+            f"Triage preview: **{triage_for_match}** via "
+            f"{triage_details.get('system')}"
+        )
+
+        # ---------------------------
+        # Facility matching
+        # ---------------------------
+        scored_df, required_caps = match_service.match(
+            case_type,
+            triage_for_match,
+            reason_detail_map,
+            other_reason_notes,
+        )
+
+        st.markdown("### Smart Receiving Facility Match (Auto-ranked)")
+        st.caption(
+            f"Required capabilities (derived): "
+            f"{required_caps if required_caps else 'none'}"
+        )
+        st.dataframe(
+            scored_df.reset_index(drop=True),
+            use_container_width=True,
+        )
+
+        facility_rank_table = (
+            scored_df.head(5).to_dict("records") if not scored_df.empty else []
+        )
+        match_rationale = []
+        if facility_rank_table:
+            top = facility_rank_table[0]
+            match_rationale = [
+                f"Capability fit score {top.get('Capability Fit Score')}",
+                f"ETA {top.get('ETA (min)')} min",
+                f"Market bonus {top.get('Market Bonus')}",
+                f"Type {top.get('Type')}",
+            ]
+
+        top_facilities = (
+            scored_df["Facility"].tolist() if not scored_df.empty else []
+        )
+        fallback_facilities = [
+            f["name"] for f in registry if f["name"] != DASHBOARD_HOSPITAL
         ]
-    )
 
-            # 5) Logistics / safety (soft constraints)
-            if "LOGISTICS_SAFETY" in reason_checks:
-                reason_detail_map["LOGISTICS_SAFETY"] = st.multiselect(
-                    "Logistics / safety reasons",
-        [
-                        "Need monitored transport",
-                        "Terrain / ETA risk",
-                        "No blood products in spoke",
-                        "No imaging after hours",
-        ]
-    )
+        receiving_facility = st.selectbox(
+            "Receiving Facility (auto-ranked)",
+            options=top_facilities if top_facilities else fallback_facilities,
+            index=0,
+            key="new_ref_receiving_facility",
+        )
 
-            st.markdown(
-                "**Specialty required (auto-derived):** " +
-                (", ".join(sorted(required_specialties)) if required_specialties else "—")
-)
-
-            other_reason_notes = st.text_area("Other referral notes (free text)")
-
-            # Real-time triage preview
-            tmp_case = {
-                "case_type": case_type,
-                "patient_age": patient_age,
-                "patient_sex": patient_sex,
-                "vitals": {"hr": hr, "sbp": sbp, "rr": rr, "spo2": spo2, "temp": temp_c, "avpu": avpu}
-}
-            on_oxygen = st.checkbox("On oxygen?", value=False)
-            spo2_scale2 = st.checkbox("SpO₂ Scale 2 (COPD)?", value=False)
-
-            triage_for_match, triage_details = triage_service.score_based_triage(
-                tmp_case, on_oxygen=on_oxygen, spo2_scale2=spo2_scale2, maternal_context=maternal_context
-)
-            st.info(f"Triage preview: **{triage_for_match}** via {triage_details.get('system')}")
-
-            # Multi-constraint facility matching (hard + soft)
-            scored_df, required_caps = match_service.match(
-                case_type, triage_for_match, reason_detail_map, other_reason_notes
-)
-
-            st.markdown("### Smart Receiving Facility Match (Auto-ranked)")
-            st.caption(f"Required capabilities (derived): {required_caps if required_caps else 'none'}")
-            st.dataframe(scored_df.reset_index(drop=True), use_container_width=True)
-
-            # Capture rationale for storage (used later in Command Center)
-            facility_rank_table = scored_df.head(5).to_dict("records") if not scored_df.empty else []
-            match_rationale = []
-            if facility_rank_table:
-                top = facility_rank_table[0]
-                match_rationale = [
-                    f"Capability fit score {top.get('Capability Fit Score')}",
-                    f"ETA {top.get('ETA (min)')} min",
-                    f"Market bonus {top.get('Market Bonus')}",
-                    f"Type {top.get('Type')}",
-    ]
-
-            # Receiving facility selector
-            top_facilities = scored_df["Facility"].tolist() if not scored_df.empty else []
-            fallback_facilities = [f["name"] for f in registry if f["name"] != DASHBOARD_HOSPITAL]
-
-            receiving_facility = st.selectbox(
-                "Receiving Facility (auto-ranked)",
-                options=top_facilities if top_facilities else fallback_facilities,
-                index=0
-)
-
-
-            submitted = st.form_submit_button("🚀 Create Referral", type="primary")
+        # ---------------------------
+        # Submit button
+        # ---------------------------
+        submitted = st.button(
+            "🚀 Create Referral",
+            type="primary",
+            key="new_ref_submit_btn",
+        )
 
         if submitted:
-            case_time = datetime.now()
-            case_num = random.randint(0,999)
-            case_id_ref = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
-
-            icd_code = icd_choice.split("—")[0].strip()
-            icd_label = icd_choice.split("—")[1].strip()
-
-            base_intv = ICD_INTERVENTION_MAP.get(icd_code, INTERVENTION_PROTOCOLS[case_type])
-            interventions = random.sample(base_intv, min(len(base_intv), 3))
-
-            eta_pick = 60
-            if not scored_df.empty and receiving_facility in scored_df["Facility"].values:
-                eta_pick = int(scored_df.loc[scored_df["Facility"]==receiving_facility, "ETA (min)"].iloc[0])
-
-            referred_case = {
-                "case_id": case_id_ref,
-                "timestamp": case_time,
-                "referring_facility": DASHBOARD_HOSPITAL,
-                "receiving_facility": receiving_facility,
-                "patient_name": patient_name or "Unknown",
-                "patient_age": patient_age,
-                "patient_sex": patient_sex,
-                "case_type": case_type,
-                "maternal_context": maternal_context if case_type=="Maternal" else None,
-                "icd_code": icd_code,
-                "icd_label": icd_label,
-                "triage_color": triage_for_match,
-                "vitals": {"hr":hr,"sbp":sbp,"rr":rr,"spo2":spo2,"temp":temp_c,"avpu":avpu},
-                "clinical_notes": clinical_notes,
-                "reason_detail_map": reason_detail_map,
-                "other_reason_notes": other_reason_notes,
-                "interventions": interventions,
-                "facility_rank_table": facility_rank_table,
-                "match_rationale": match_rationale,
-                "required_specialties": sorted(list(required_specialties)) if "required_specialties" in locals() else [],
-                "interventions_referring": interventions,  # spoke/resus steps in demo
-                "eta_minutes": eta_pick,
-                "requested_at": case_time,
-                "sla_minutes": 15,
-                "escalation_level": 0,
-                "status": "QUEUED_OFFLINE" if offline_mode else "REQUESTED",
-                "transit_updates": []
-            }
-
-            if offline_mode:
-                data_service.queue_offline(referred_case)
-                audit_service.log(st.session_state.user, st.session_state.role, case_id_ref, "REFERRAL_QUEUED_OFFLINE", referred_case)
-                st.success(f"Referral queued offline: {case_id_ref}")
+            if not icd_choice:
+                st.error(
+                    "Cannot create referral: no Provisional ICD available "
+                    "for this case type."
+                )
             else:
-                data_service.save_referral(referred_case)
-                audit_service.log(st.session_state.user, st.session_state.role, case_id_ref, "REFERRAL_CREATED", referred_case)
-                st.session_state.premium_data["outbound"].append(referred_case)
-                st.success(f"Referral created: {case_id_ref}")
+                case_time = datetime.now()
+                case_num = random.randint(0, 999)
+                case_id_ref = f"REF_{case_time.strftime('%Y%m%d')}_{case_num:03d}"
 
+                icd_code = icd_choice.split("—")[0].strip()
+                icd_label = icd_choice.split("—")[1].strip()
+
+                base_intv = ICD_INTERVENTION_MAP.get(
+                    icd_code, INTERVENTION_PROTOCOLS[case_type]
+                )
+                interventions = random.sample(
+                    base_intv, min(len(base_intv), 3)
+                )
+
+                eta_pick = 60
+                if (
+                    not scored_df.empty
+                    and receiving_facility in scored_df["Facility"].values
+                ):
+                    eta_pick = int(
+                        scored_df.loc[
+                            scored_df["Facility"] == receiving_facility,
+                            "ETA (min)",
+                        ].iloc[0]
+                    )
+
+                referred_case = {
+                    "case_id": case_id_ref,
+                    "timestamp": case_time,
+                    "referring_facility": DASHBOARD_HOSPITAL,
+                    "receiving_facility": receiving_facility,
+                    "patient_name": patient_name or "Unknown",
+                    "patient_age": patient_age,
+                    "patient_sex": patient_sex,
+                    "case_type": case_type,
+                    "maternal_context": (
+                        maternal_context if case_type == "Maternal" else None
+                    ),
+                    "icd_code": icd_code,
+                    "icd_label": icd_label,
+                    "triage_color": triage_for_match,
+                    "vitals": {
+                        "hr": hr,
+                        "sbp": sbp,
+                        "rr": rr,
+                        "spo2": spo2,
+                        "temp": temp_c,
+                        "avpu": avpu,
+                    },
+                    "clinical_notes": clinical_notes,
+                    "reason_detail_map": reason_detail_map,
+                    "other_reason_notes": other_reason_notes,
+                    "interventions": interventions,
+                    "facility_rank_table": facility_rank_table,
+                    "match_rationale": match_rationale,
+                    "required_specialties": sorted(list(required_specialties)),
+                    "interventions_referring": interventions,
+                    "eta_minutes": eta_pick,
+                    "requested_at": case_time,
+                    "sla_minutes": 15,
+                    "escalation_level": 0,
+                    "status": "QUEUED_OFFLINE"
+                    if offline_mode
+                    else "REQUESTED",
+                    "transit_updates": [],
+                }
+
+                if offline_mode:
+                    data_service.queue_offline(referred_case)
+                    audit_service.log(
+                        st.session_state.user,
+                        st.session_state.role,
+                        case_id_ref,
+                        "REFERRAL_QUEUED_OFFLINE",
+                        referred_case,
+                    )
+                    st.success(f"Referral queued offline: {case_id_ref}")
+                else:
+                    data_service.save_referral(referred_case)
+                    audit_service.log(
+                        st.session_state.user,
+                        st.session_state.role,
+                        case_id_ref,
+                        "REFERRAL_CREATED",
+                        referred_case,
+                    )
+                    st.session_state.premium_data["outbound"].append(
+                        referred_case
+                    )
+                    st.success(f"Referral created: {case_id_ref}")
 
 # =============================================================================
 # TAB 3: CAPACITY MARKET
