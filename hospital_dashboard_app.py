@@ -898,13 +898,13 @@ class FacilityMatchService:
         )
         return round(total, 1), breakdown
 
-    def match(self, case_type, triage, reason_detail_map, other_reason_notes=""):
+    def match(self, case_type, triage, reason_detail_map, other_reason_notes="", include_dashboard=False):
         required_caps = self._required_caps_from_reasons(reason_detail_map, other_reason_notes)
         ok_fn = self.filter_facilities(required_caps)
 
         scored = []
         for f in self.registry:
-            if f["name"] == DASHBOARD_HOSPITAL:
+            if (not include_dashboard) and f["name"] == DASHBOARD_HOSPITAL:
                 continue
             if not ok_fn(f):
                 continue
@@ -926,6 +926,7 @@ class FacilityMatchService:
             columns=["Facility","Score","Distance (km)","ETA (min)","ICU Beds Free","Occupancy %","Type"]
         )
         return df, required_caps
+
 
 
 class ReferralService:
@@ -1500,10 +1501,18 @@ with tab_cc:
     outbound = st.session_state.premium_data["outbound"]
     inbound = st.session_state.premium_data["inbound"]
 
-    # Filters
+    # ---------------------------
+    # LEFT: Active Network Cases
+    # ---------------------------
     with left:
         st.markdown("### Active Network Cases")
-        view_filter = st.selectbox("View", ["Outbound (Sent)", "Inbound (Received)"])
+
+        view_filter = st.selectbox(
+            "View",
+            ["Outbound (Sent)", "Inbound (Received)"],
+            key="cc_view_filter"
+        )
+
         status_filter = st.multiselect(
             "Status filter",
             options=REFERRAL_STATE_FLOW,
@@ -1511,11 +1520,16 @@ with tab_cc:
             key="cc_status_filter"
         )
 
-
         cases = outbound if view_filter.startswith("Outbound") else inbound
-        cases = [c for c in cases if c.get("status") in st.session_state.cc_status_filter]
 
-        # ✅ If selected case no longer matches filter, clear selection
+        # Normalise status safely before filtering
+        wanted = {s.strip().upper() for s in status_filter}
+        cases = [
+            c for c in cases
+            if str(c.get("status", "")).strip().upper() in wanted
+        ]
+
+        # If currently selected case falls outside filter, clear it
         if st.session_state.get("selected_case"):
             valid_ids = {x["case_id"] for x in cases}
             if st.session_state.selected_case not in valid_ids:
@@ -1525,22 +1539,45 @@ with tab_cc:
         if not cases:
             st.info("No cases match filter.")
         else:
-            for i, c in enumerate(sorted(cases, key=lambda x: x["timestamp"], reverse=True)[:30]):
+            for i, c in enumerate(
+                sorted(cases, key=lambda x: x["timestamp"], reverse=True)[:30]
+            ):
                 triage_preview, _ = triage_service.score_based_triage(c)
-                cls = "critical" if triage_preview == "RED" else "urgent" if triage_preview == "YELLOW" else "stable"
-                label = f"{c['case_id']} • {c.get('case_type')} • {triage_preview} • {c.get('status')}"
-                with st.container():
-                    clicked = st.button(label, key=f"case_btn_{view_filter}_{i}", use_container_width=True)
+                label = (
+                    f"{c['case_id']} • {c.get('case_type')} • "
+                    f"{triage_preview} • {c.get('status')}"
+                )
+                clicked = st.button(
+                    label,
+                    key=f"case_btn_{view_filter}_{i}",
+                    use_container_width=True,
+                )
                 if clicked:
                     st.session_state.selected_case = c["case_id"]
-                    st.session_state.selected_bucket = "outbound" if view_filter.startswith("Outbound") else "inbound"
+                    st.session_state.selected_bucket = (
+                        "outbound" if view_filter.startswith("Outbound") else "inbound"
+                    )
 
+    # ---------------------------
+    # RIGHT: Case Detail
+    # ---------------------------
     with right:
         sel_id = st.session_state.get("selected_case")
-        sel_bucket = st.session_state.get("selected_bucket", "outbound")
+
+        # Robust bucket normalisation
+        sel_bucket = st.session_state.get("selected_bucket")
+        if sel_bucket not in ("outbound", "inbound"):
+            sel_bucket = (
+                "outbound"
+                if st.session_state.cc_view_filter.startswith("Outbound")
+                else "inbound"
+            )
+            st.session_state.selected_bucket = sel_bucket
+
+        bucket_cases = st.session_state.premium_data.get(sel_bucket, [])
 
         sel_case = None
-        for c in st.session_state.premium_data[sel_bucket]:
+        for c in bucket_cases:
             if c.get("case_id") == sel_id:
                 sel_case = c
                 break
@@ -1554,101 +1591,158 @@ with tab_cc:
 
             topA, topB, topC = st.columns(3)
             with topA:
-                st.metric("Patient", c.get("patient_name","Unknown"))
+                st.metric("Patient", c.get("patient_name", "Unknown"))
                 st.write(f"Age/Sex: {c.get('patient_age')} / {c.get('patient_sex')}")
             with topB:
                 st.metric("Case Type", c.get("case_type"))
                 st.write(f"ICD: {c.get('icd_code')} — {c.get('icd_label')}")
             with topC:
-                st.markdown(f"Triage (current): {safe_badge(triage_color) if triage_color else '-'}", unsafe_allow_html=True)
+                st.markdown(
+                    f"Triage (current): "
+                    f"{safe_badge(triage_color) if triage_color else '-'}",
+                    unsafe_allow_html=True,
+                )
                 st.write(f"Status: **{c.get('status')}**")
 
             st.markdown("---")
 
-            # Timeline
+            # ---------------------------
+            # Inbound rationale + resuscitation
+            # ---------------------------
+            if sel_bucket == "inbound":
+                st.markdown("### Referral Rationale & Pre-transfer Resuscitation")
+
+                rank_table = c.get("facility_rank_table")
+                match_rationale = c.get("match_rationale")
+
+                # If nothing stored (synthetic inbound), compute snapshot via matcher
+                if (rank_table is None) and (match_rationale is None):
+                    try:
+                        tmp_triage, _ = triage_service.score_based_triage(c)
+                        tmp_df, tmp_caps = match_service.match(
+                            c.get("case_type"),
+                            tmp_triage,
+                            c.get("reason_detail_map", {}),
+                            c.get("other_reason_notes", ""),
+                        )
+                        if not tmp_df.empty:
+                            rank_table = tmp_df.head(5).to_dict("records")
+                            top = rank_table[0]
+                            match_rationale = [
+                                f"Capability fit score {top.get('Capability Fit Score')}",
+                                f"ETA {top.get('ETA (min)')} min",
+                                f"Market bonus {top.get('Market Bonus')}",
+                            ]
+                    except Exception:
+                        # Silent fail – demo only
+                        pass
+
+                if match_rationale:
+                    st.markdown("**Why this center / facility was auto-ranked:**")
+                    for r in match_rationale:
+                        st.write(f"• {r}")
+                elif rank_table:
+                    st.markdown("**Auto-rank snapshot:**")
+                    st.dataframe(
+                        pd.DataFrame(rank_table),
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption(
+                        "No matching rationale stored for this case "
+                        "(demo synthetic inbound)."
+                    )
+
+                # Referrer interventions (spoke / referring hospital)
+                ref_steps = (
+                    c.get("interventions_referring")
+                    or c.get("interventions")
+                    or []
+                )
+                if ref_steps:
+                    st.markdown("**Referrer resuscitation already done:**")
+                    st.write(
+                        " ".join(
+                            f"<span class='intervention-badge'>{s}</span>"
+                            for s in ref_steps
+                        ),
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption("No referrer resuscitation steps recorded.")
+
+                # Suggested standard stabilization protocol
+                std_list = ICD_INTERVENTION_MAP.get(
+                    c.get("icd_code"),
+                    INTERVENTION_PROTOCOLS.get(c.get("case_type"), []),
+                )
+                if std_list:
+                    st.markdown("**Suggested stabilization protocol (standard):**")
+                    st.write(std_list)
+
+            # ---------------------------
+            # Timeline + Vitals
+            # ---------------------------
             st.markdown("### Timeline")
             st.write(f"Requested at: {c.get('requested_at')}")
             if c.get("sla_escalated_at"):
-                st.warning(f"SLA Escalated (L{c.get('escalation_level')}): {c.get('sla_escalated_at')}")
+                st.warning(
+                    f"SLA Escalated (L{c.get('escalation_level')}): "
+                    f"{c.get('sla_escalated_at')}"
+                )
 
-            # Vitals
             st.markdown("### Vitals")
             v = c.get("vitals", {})
             vit_df = pd.DataFrame([v])
             st.table(vit_df)
 
-            # ✅ Inbound rationale + referrer resuscitation
-            st.markdown("### Referral Rationale & Pre-transfer Resuscitation")
-
-            # 1) Why this receiving center was chosen / ranked
-            rank_table = c.get("facility_rank_table")
-            match_rationale = c.get("match_rationale")
-
-            # If not stored (synthetic inbound), compute on the fly
-            if (rank_table is None) and (match_rationale is None):
-                try:
-                    tmp_triage, _ = triage_service.score_based_triage(c)
-                    tmp_df, tmp_caps = match_service.match(
-                        c.get("case_type"), tmp_triage, c.get("reason_detail_map", {}), c.get("other_reason_notes","")
-        )
-                    rank_table = tmp_df.head(5).to_dict("records") if not tmp_df.empty else None
-                    if rank_table:
-                        top = rank_table[0]
-                        match_rationale = [
-                            f"Capability fit score {top.get('Capability Fit Score')}",
-                            f"ETA {top.get('ETA (min)')} min",
-                            f"Market bonus {top.get('Market Bonus')}",
-            ]
-                except Exception:
-                    pass
-
-            if match_rationale:
-                st.markdown("**Why this center / facility was auto-ranked:**")
-                for r in match_rationale:
-                    st.write(f"• {r}")
-            elif rank_table:
-                st.markdown("**Auto-rank snapshot:**")
-                st.dataframe(pd.DataFrame(rank_table), use_container_width=True)
-            else:
-                st.caption("No matching rationale stored for this case (demo synthetic inbound).")
-
-            # 2) Referrer interventions (spoke / referring hospital)
-            ref_steps = c.get("interventions_referring") or c.get("interventions") or []
-            if ref_steps:
-                st.markdown("**Referrer resuscitation already done:**")
-                st.write(" ".join([f"<span class='intervention-badge'>{s}</span>" for s in ref_steps]), unsafe_allow_html=True)
-            else:
-                st.caption("No referrer resuscitation steps recorded.")
-
-
+            # ---------------------------
             # Transport + Digital Twin
+            # ---------------------------
             st.markdown("### Transport & Pre-arrival Digital Twin")
             updates = c.get("transit_updates", []) or []
             risk, deltas = deterioration_risk(updates)
-            risk_color = {"LOW":"#2e7d32","MODERATE":"#f57f17","HIGH":"#c62828"}[risk]
+            risk_color = {"LOW": "#2e7d32", "MODERATE": "#f57f17", "HIGH": "#c62828"}[
+                risk
+            ]
             st.markdown(
                 f"<div class='premium-card' style='border-left:6px solid {risk_color};'>"
-                f"<b>Deterioration Risk Forecast:</b> <span style='color:{risk_color};font-weight:700;'>{risk}</span><br/>"
+                f"<b>Deterioration Risk Forecast:</b> "
+                f"<span style='color:{risk_color};font-weight:700;'>{risk}</span><br/>"
                 f"Trend deltas: {deltas if deltas else 'n/a'}"
                 f"</div>",
-                unsafe_allow_html=True
+                unsafe_allow_html=True,
             )
+
             if updates:
                 upd_rows = []
                 for u in updates:
                     uv = u["vitals"]
-                    upd_rows.append({
-                        "Time": u["timestamp"],
-                        "HR": uv["hr"], "SBP": uv["sbp"], "RR": uv["rr"], "SpO2": uv["spo2"], "Temp": uv["temp"],
-                        "Note": u["emt_note"]
-                    })
+                    upd_rows.append(
+                        {
+                            "Time": u["timestamp"],
+                            "HR": uv["hr"],
+                            "SBP": uv["sbp"],
+                            "RR": uv["rr"],
+                            "SpO2": uv["spo2"],
+                            "Temp": uv["temp"],
+                            "Note": u["emt_note"],
+                        }
+                    )
                 upd_df = pd.DataFrame(upd_rows)
                 st.dataframe(upd_df, use_container_width=True)
+
                 # Trend chart
                 try:
-                    chart_df = upd_df[["Time","SpO2","SBP","HR"]].copy()
+                    chart_df = upd_df[["Time", "SpO2", "SBP", "HR"]].copy()
                     chart_df["Time"] = pd.to_datetime(chart_df["Time"])
-                    fig = px.line(chart_df, x="Time", y=["SpO2","SBP","HR"], markers=True, title="Transit Vitals Trend")
+                    fig = px.line(
+                        chart_df,
+                        x="Time",
+                        y=["SpO2", "SBP", "HR"],
+                        markers=True,
+                        title="Transit Vitals Trend",
+                    )
                     st.plotly_chart(fig, use_container_width=True)
                 except Exception:
                     pass
@@ -1657,31 +1751,49 @@ with tab_cc:
 
             st.markdown("---")
 
+            # ---------------------------
             # Clinical triage recommendation
+            # ---------------------------
             st.markdown("### 🧠 Clinical Triage Recommendation")
-            oxy_col, s2_col, ctx_col = st.columns([0.25,0.25,0.5])
+            oxy_col, s2_col, ctx_col = st.columns([0.25, 0.25, 0.5])
             with oxy_col:
-                on_oxygen = st.checkbox("On oxygen?", value=False, key=f"oxy_{c['case_id']}")
+                on_oxygen = st.checkbox(
+                    "On oxygen?", value=False, key=f"oxy_{c['case_id']}"
+                )
             with s2_col:
-                spo2_scale2 = st.checkbox("SpO₂ Scale 2?", value=False, key=f"s2_{c['case_id']}")
+                spo2_scale2 = st.checkbox(
+                    "SpO₂ Scale 2?", value=False, key=f"s2_{c['case_id']}"
+                )
+
             maternal_context = "Antenatal"
             if c.get("case_type") == "Maternal":
                 with ctx_col:
                     maternal_context = st.selectbox(
                         "Maternal context",
-                        ["Antenatal","Intrapartum","Postpartum <24h","Postpartum >24h","Hemorrhage risk","Eclampsia risk"],
-                        key=f"ctx_{c['case_id']}"
+                        [
+                            "Antenatal",
+                            "Intrapartum",
+                            "Postpartum <24h",
+                            "Postpartum >24h",
+                            "Hemorrhage risk",
+                            "Eclampsia risk",
+                        ],
+                        key=f"ctx_{c['case_id']}",
                     )
 
             triage_color, details = triage_service.score_based_triage(
-                c, on_oxygen=on_oxygen, spo2_scale2=spo2_scale2, maternal_context=maternal_context
+                c,
+                on_oxygen=on_oxygen,
+                spo2_scale2=spo2_scale2,
+                maternal_context=maternal_context,
             )
             c["triage_color"] = triage_color  # update in-memory
 
-            color_map = {"RED":"#ff4444","YELLOW":"#ffaa00","GREEN":"#00c853"}
+            color_map = {"RED": "#ff4444", "YELLOW": "#ffaa00", "GREEN": "#00c853"}
             triage_hex = color_map.get(triage_color, "#999999")
 
-            st.markdown(f"""
+            st.markdown(
+                f"""
             <div style="margin:0.5rem 0 1rem 0;padding:1rem 1.2rem;border-radius:12px;
                         background:{triage_hex}15;border-left:6px solid {triage_hex};">
                 <h4 style="margin:0;color:{triage_hex};">Recommended Triage: {triage_color}</h4>
@@ -1689,15 +1801,20 @@ with tab_cc:
                     <b>System:</b> {details.get("system")}
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """,
+                unsafe_allow_html=True,
+            )
 
             system = details.get("system", "")
             if system.startswith("NEWS2"):
                 st.write(
                     f"**NEWS2 Total:** {details['news2_total']}  "
-                    f"(RR:{details['news2_parts']['rr']}, SpO₂:{details['news2_parts']['spo2']}, "
-                    f"O₂:{details['news2_parts']['oxygen']}, SBP:{details['news2_parts']['sbp']}, "
-                    f"HR:{details['news2_parts']['hr']}, Temp:{details['news2_parts']['temp']}, "
+                    f"(RR:{details['news2_parts']['rr']}, "
+                    f"SpO₂:{details['news2_parts']['spo2']}, "
+                    f"O₂:{details['news2_parts']['oxygen']}, "
+                    f"SBP:{details['news2_parts']['sbp']}, "
+                    f"HR:{details['news2_parts']['hr']}, "
+                    f"Temp:{details['news2_parts']['temp']}, "
                     f"AVPU:{details['news2_parts']['conc']})"
                 )
                 st.write(f"**qSOFA:** {details['qsofa']} (≥2 upgrades risk)")
@@ -1707,12 +1824,17 @@ with tab_cc:
                 st.caption(f"Context: {details.get('maternal_context')}")
             elif system.startswith("PEWS"):
                 st.markdown("**PEWS v1**")
-                st.write(f"Score: {details.get('pews_total')} | Band: {details.get('age_band')}")
+                st.write(
+                    f"Score: {details.get('pews_total')} | "
+                    f"Band: {details.get('age_band')}"
+                )
 
-            # ML comparator (recommender only)
+            # ---------------------------
+            # ML comparator (recommender-only)
+            # ---------------------------
             st.markdown("#### ML Comparator (Recommender-only)")
             model = load_triage_model()
-            age = float(c.get("patient_age",0) or 0)
+            age = float(c.get("patient_age", 0) or 0)
             features_payload = {
                 "age": age,
                 "sex": c.get("patient_sex"),
@@ -1722,53 +1844,133 @@ with tab_cc:
                 "meows_total": details.get("meows_total"),
                 "news2_total": details.get("news2_total"),
                 "qsofa": details.get("qsofa"),
-                "maternal_context": maternal_context if c.get("case_type")=="Maternal" else None,
-                "reasons": c.get("reason_detail_map", {})
+                "maternal_context": (
+                    maternal_context if c.get("case_type") == "Maternal" else None
+                ),
+                "reasons": c.get("reason_detail_map", {}),
             }
             data_service.log_ml_features(c["case_id"], features_payload)
 
             if model is None:
-                st.info("No ML model file found (my_model.pkl). Showing rules-only triage.")
+                st.info(
+                    "No ML model file found (my_model.pkl). "
+                    "Showing rules-only triage."
+                )
             else:
-                # simple feature vector (demo)
                 v = c.get("vitals", {})
-                vec = np.array([[
-                    age, v.get("sbp",0), v.get("spo2",0), v.get("hr",0),
-                    v.get("rr",0), v.get("temp",36.5), 1 if (v.get("avpu","A")!="A") else 0,
-                    1 if on_oxygen else 0, 1 if spo2_scale2 else 0
-                ]])
-                try:
-                    expected_n = getattr(model, "n_features_in_", vec.shape[1])
-                    if vec.shape[1] != expected_n:
-                        st.error(
-                            f"Model expects {expected_n} features, but app is sending {vec.shape[1]}. "
-                            "Retrain or update feature map."
-                        )
-                    X = vec[:, :expected_n]
-                    ml_pred = model.predict(X)[0]
+                vec = np.array(
+                    [[
+                        age,
+                        v.get("sbp", 0),
+                        v.get("spo2", 0),
+                        v.get("hr", 0),
+                        v.get("rr", 0),
+                        v.get("temp", 36.5),
+                        1 if (v.get("avpu", "A") != "A") else 0,
+                        1 if on_oxygen else 0,
+                        1 if spo2_scale2 else 0,
+                    ]]
+                )
 
-                    st.write(f"ML suggested triage: **{ml_pred}** (does NOT override rules)")
+                # Align feature shape with model, if needed
+                n_req = getattr(model, "n_features_in_", None)
+                if n_req is not None and vec.shape[1] != n_req:
+                    st.warning(
+                        f"Model expects {n_req} features; app created "
+                        f"{vec.shape[1]}. Auto-aligning for demo; "
+                        "please retrain or update feature map for production."
+                    )
+                    if vec.shape[1] > n_req:
+                        vec = vec[:, :n_req]
+                    else:
+                        vec = np.pad(
+                            vec,
+                            ((0, 0), (0, n_req - vec.shape[1])),
+                            constant_values=0,
+                        )
+
+                try:
+                    ml_pred = model.predict(vec)[0]
+                    st.write(
+                        f"ML suggested triage: **{ml_pred}** "
+                        "(does NOT override rules)"
+                    )
                     agree = "✅ Agree" if ml_pred == triage_color else "⚠️ Disagree"
                     st.write(f"Rules vs ML: {agree}")
-                    
+
                     fb_col1, fb_col2, fb_col3 = st.columns(3)
-                    ...
+                    with fb_col1:
+                        if st.button("Clinician agrees"):
+                            log_payload = dict(features_payload)
+                            log_payload["rules_triage"] = triage_color
+                            log_payload["ml_triage"] = ml_pred
+                            log_payload["feedback"] = "agree"
+                            data_service.log_ml_features(c["case_id"], log_payload)
+                            audit_service.log(
+                                st.session_state.user,
+                                st.session_state.role,
+                                c["case_id"],
+                                "ML_FEEDBACK",
+                                log_payload,
+                            )
+                            st.success("Feedback logged.")
+                    with fb_col2:
+                        if st.button("Clinician disagrees"):
+                            log_payload = dict(features_payload)
+                            log_payload["rules_triage"] = triage_color
+                            log_payload["ml_triage"] = ml_pred
+                            log_payload["feedback"] = "disagree"
+                            data_service.log_ml_features(c["case_id"], log_payload)
+                            audit_service.log(
+                                st.session_state.user,
+                                st.session_state.role,
+                                c["case_id"],
+                                "ML_FEEDBACK",
+                                log_payload,
+                            )
+                            st.success("Feedback logged.")
+                    with fb_col3:
+                        if st.button("Needs review"):
+                            log_payload = dict(features_payload)
+                            log_payload["rules_triage"] = triage_color
+                            log_payload["ml_triage"] = ml_pred
+                            log_payload["feedback"] = "review"
+                            data_service.log_ml_features(c["case_id"], log_payload)
+                            audit_service.log(
+                                st.session_state.user,
+                                st.session_state.role,
+                                c["case_id"],
+                                "ML_FEEDBACK",
+                                log_payload,
+                            )
+                            st.success("Feedback logged.")
                 except Exception as e:
                     st.warning("ML prediction failed; check model interface.")
-                    st.caption(f"Error: {e}")
+                    st.caption(f"Error: {type(e).__name__}: {e}")
 
-
-            # Optional override with rationale
+            # ---------------------------
+            # Override + workflow + export
+            # ---------------------------
             st.markdown("---")
             st.markdown("### Override (with audit rationale)")
-            if st.session_state.role in ["COMMAND_CENTER","REFERRER"]:
-                override_col1, override_col2 = st.columns([0.4,0.6])
+            if st.session_state.role in ["COMMAND_CENTER", "REFERRER"]:
+                override_col1, override_col2 = st.columns([0.4, 0.6])
                 with override_col1:
-                    override_to = st.selectbox("Override to", TRIAGE_COLORS, index=TRIAGE_COLORS.index(triage_color))
+                    override_to = st.selectbox(
+                        "Override to",
+                        TRIAGE_COLORS,
+                        index=TRIAGE_COLORS.index(triage_color),
+                    )
                 with override_col2:
                     override_reason = st.selectbox(
-                        "Override reason", 
-                        ["Clinical judgement","Protocol exception","Equipment limitation","Contextual risk","Other"]
+                        "Override reason",
+                        [
+                            "Clinical judgement",
+                            "Protocol exception",
+                            "Equipment limitation",
+                            "Contextual risk",
+                            "Other",
+                        ],
                     )
                 override_note = st.text_area("Override note (mandatory)")
                 if st.button("Apply override"):
@@ -1777,35 +1979,56 @@ with tab_cc:
                     else:
                         prev = triage_color
                         c["triage_color"] = override_to
-                        audit_service.log(st.session_state.user, st.session_state.role, c["case_id"], "TRIAGE_OVERRIDE", {
-                            "from": prev, "to": override_to,
-                            "reason": override_reason, "note": override_note,
-                            "rules_details": details
-                        })
+                        audit_service.log(
+                            st.session_state.user,
+                            st.session_state.role,
+                            c["case_id"],
+                            "TRIAGE_OVERRIDE",
+                            {
+                                "from": prev,
+                                "to": override_to,
+                                "reason": override_reason,
+                                "note": override_note,
+                                "rules_details": details,
+                            },
+                        )
                         data_service.save_referral(c)
                         st.success("Override applied and audited.")
             else:
                 st.caption("You do not have permission to override triage.")
 
-            # Status transitions
             st.markdown("---")
             st.markdown("### Referral Workflow")
             st.write(f"Current status: **{c.get('status')}**")
             next_actions = []
             status = c.get("status")
 
-            if status == "REQUESTED" and st.session_state.role in ["COMMAND_CENTER","REFERRER"]:
-                next_actions = [("ACKNOWLEDGE","ACKNOWLEDGED"), ("REJECT","REJECTED")]
-            elif status == "ACKNOWLEDGED" and st.session_state.role in ["COMMAND_CENTER"]:
-                next_actions = [("ACCEPT","ACCEPTED"), ("REJECT","REJECTED")]
-            elif status == "ACCEPTED" and st.session_state.role in ["COMMAND_CENTER","EMT"]:
-                next_actions = [("DISPATCH","DISPATCHED")]
-            elif status == "DISPATCHED" and st.session_state.role in ["EMT","COMMAND_CENTER"]:
-                next_actions = [("ENROUTE","ENROUTE")]
-            elif status == "ENROUTE" and st.session_state.role in ["EMT","COMMAND_CENTER"]:
-                next_actions = [("ARRIVED","ARRIVED")]
+            if status == "REQUESTED" and st.session_state.role in [
+                "COMMAND_CENTER",
+                "REFERRER",
+            ]:
+                next_actions = [("ACKNOWLEDGE", "ACKNOWLEDGED"), ("REJECT", "REJECTED")]
+            elif status == "ACKNOWLEDGED" and st.session_state.role in [
+                "COMMAND_CENTER"
+            ]:
+                next_actions = [("ACCEPT", "ACCEPTED"), ("REJECT", "REJECTED")]
+            elif status == "ACCEPTED" and st.session_state.role in [
+                "COMMAND_CENTER",
+                "EMT",
+            ]:
+                next_actions = [("DISPATCH", "DISPATCHED")]
+            elif status == "DISPATCHED" and st.session_state.role in [
+                "EMT",
+                "COMMAND_CENTER",
+            ]:
+                next_actions = [("ENROUTE", "ENROUTE")]
+            elif status == "ENROUTE" and st.session_state.role in [
+                "EMT",
+                "COMMAND_CENTER",
+            ]:
+                next_actions = [("ARRIVED", "ARRIVED")]
             elif status == "ARRIVED" and st.session_state.role in ["COMMAND_CENTER"]:
-                next_actions = [("CLOSE","CLOSED")]
+                next_actions = [("CLOSE", "CLOSED")]
 
             if next_actions:
                 act_cols = st.columns(len(next_actions))
@@ -1813,11 +2036,13 @@ with tab_cc:
                     with act_cols[i]:
                         if st.button(label):
                             c = referral_service.transition(
-                                c, new_status, st.session_state.user, st.session_state.role
+                                c,
+                                new_status,
+                                st.session_state.user,
+                                st.session_state.role,
                             )
                             st.success(f"Status moved to {new_status}.")
 
-            # Export
             st.markdown("---")
             st.markdown("### Interoperability Export (FHIR-lite)")
             if st.button("Generate FHIR Observation JSON"):
