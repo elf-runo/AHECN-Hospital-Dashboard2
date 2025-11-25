@@ -180,7 +180,7 @@ DASHBOARD_HOSPITAL = "Tertiary Central Hospital"
 DASHBOARD_LAT = 25.578
 DASHBOARD_LON = 91.893
 
-CASE_TYPES = ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Other"]
+CASE_TYPES = ["Maternal", "Trauma", "Stroke", "Cardiac", "Sepsis", "Pediatrics", "Other"]
 TRIAGE_COLORS = ["RED", "YELLOW", "GREEN"]
 
 REFERRAL_STATE_FLOW = [
@@ -227,6 +227,11 @@ BASE_ICD_BY_TYPE = {
         ("R65.2","Severe sepsis"),
         ("J18.9","Pneumonia unspecified organism"),
     ],
+    "Pediatrics": [
+        ("J21.0", "Acute bronchiolitis"),
+        ("A09.0", "Infectious gastroenteritis and colitis"),
+        ("R50.9", "Fever, unspecified in child"),
+    ],
     "Other": [
         ("J96.0","Acute respiratory failure"),
         ("K92.2","GI bleed unspecified"),
@@ -272,6 +277,16 @@ INTERVENTION_PROTOCOLS = {
         "Blood cultures", "Lactate monitoring",
         "Vasopressors if shock", "Oxygen", "Urine output monitoring"
     ],
+    ],
+    "Pediatrics": [
+        "Airway positioning / suction",
+        "Oxygen / nebulization",
+        "IV / IO access as needed",
+        "Weight-based fluid bolus",
+        "Glucose check and correction",
+        "Antipyretics",
+        "Frequent vitals and reassessment"
+    ],
     "Other": [
         "Oxygen", "IV access", "Symptom control",
         "Monitoring", "Specialist consult", "Imaging/labs as indicated"
@@ -302,6 +317,11 @@ REFERRAL_REASONS = {
         "Stroke": ["Stroke unit / thrombolysis capability"],
         "Cardiac": ["Cath lab / cardiologist", "Cardiac ICU"],
         "Sepsis": ["Critical care intensivist", "Organ support"],
+        "Pediatrics": [
+            "Pediatric ICU / ventilator support",
+            "Pediatric surgeon / anesthetist",
+            "Neonatologist / pediatrician"
+        ],
         "Other": ["Specialist consult needed"]
     },
     "EQUIPMENT_REQUIRED": {
@@ -310,6 +330,11 @@ REFERRAL_REASONS = {
         "Stroke": ["CT/MRI + thrombolysis setting"],
         "Cardiac": ["Cath lab / PCI suite", "Ventilator support"],
         "Sepsis": ["Ventilator / dialysis support"],
+        "Pediatrics": [
+            "Pediatric ventilator / infusion pumps",
+            "Pediatric imaging / CT/MRI with sedation",
+            "NICU equipment"
+        ],
         "Other": ["Advanced respiratory or imaging support"]
     }
 }
@@ -342,6 +367,11 @@ REASON_TO_CAPS = {
     "Organ support": ["ICU_BED", "VENTILATOR"],
     "Specialist consult needed": ["ICU_BED"],
 
+    # NEW – pediatrics specialty
+    "Pediatric ICU / ventilator support": ["ICU_BED", "VENTILATOR"],
+    "Pediatric surgeon / anesthetist": ["OR", "ICU_BED"],
+    "Neonatologist / pediatrician": ["ICU_BED"],
+
     # Equipment required
     "Blood bank / massive transfusion": ["BLOODBANK", "ICU_BED"],
     "USG/CT obstetric imaging": ["CT"],
@@ -351,6 +381,11 @@ REASON_TO_CAPS = {
     "Ventilator support": ["VENTILATOR", "ICU_BED"],
     "Ventilator / dialysis support": ["VENTILATOR", "ICU_BED"],
     "Advanced respiratory or imaging support": ["VENTILATOR", "CT"],
+
+    # NEW – pediatrics equipment
+    "Pediatric ventilator / infusion pumps": ["VENTILATOR", "ICU_BED"],
+    "Pediatric imaging / CT/MRI with sedation": ["CT", "MRI"],
+    "NICU equipment": ["ICU_BED", "VENTILATOR"],
 
     # ICU bed unavailable
     "No ICU beds free at referring facility": ["ICU_BED"],
@@ -2069,12 +2104,34 @@ with tab_new:
                 patient_age = st.number_input("Age", min_value=0, max_value=120, value=30)
                 patient_sex = st.selectbox("Sex", ["M","F"])
             with c2:
-                case_type = st.selectbox("Case Type", CASE_TYPES)
+                # 1) Case type selector (give it an explicit key)
+                case_type = st.selectbox(
+                    "Case Type",
+                    CASE_TYPES,
+                    key="new_ref_case_type",
+                )
+
+                # 2) Filter ICDs strictly by the selected case type
                 icd_options = [
                     f"{i['icd_code']} — {i['label']}"
-                    for i in ICD_CATALOG if i["case_type"] == case_type
+                    for i in ICD_CATALOG
+                    if i["case_type"] == case_type
                 ]
-                icd_choice = st.selectbox("Provisional ICD", icd_options)
+
+                # 3) Guard against mis-config (no ICDs for this type)
+                if not icd_options:
+                    st.error(f"No provisional ICDs configured for case type '{case_type}'. "
+                             "Check BASE_ICD_BY_TYPE / build_demo_icd_catalog().")
+                    icd_choice = None
+                else:
+                    # IMPORTANT: key depends on case_type so state is reset when you change type
+                    icd_choice = st.selectbox(
+                        "Provisional ICD",
+                        icd_options,
+                        key=f"new_ref_icd_{case_type}",
+                    )
+
+
             with c3:
                 maternal_context = "Antenatal"
                 if case_type == "Maternal":
